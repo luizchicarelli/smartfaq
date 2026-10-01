@@ -1,0 +1,18 @@
+# Interface
+streamlit>=1.38
+
+# Dados / utilitarios
+pandas>=2.2
+
+# Nucleo RAG (Dupla 1 + Dupla 2)
+chromadb>=0.5
+sentence-transformers>=3.0
+langchain-community>=0.3
+langchain-text-splitters>=0.3
+pypdf>=5.0
+
+# LLM (Gemini)
+google-genai>=2.20
+
+# Testes
+pytest>=8.0

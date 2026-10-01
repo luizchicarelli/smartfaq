@@ -1,0 +1,20 @@
+# Segredos — NUNCA versionar a chave de API real
+.streamlit/secrets.toml
+
+# Banco vetorial gerado localmente (reconstruido automaticamente)
+chroma_db/
+dados/chroma_db/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Sistema
+.DS_Store
+Thumbs.db
