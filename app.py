@@ -1,5 +1,6 @@
 import difflib
 import os
+import time
 
 import pandas as pd
 import streamlit as st
@@ -213,7 +214,11 @@ def carregar_nucleo_rag():
         st.sidebar.warning(f"Núcleo RAG não pôde ser inicializado: {erro}")
         return None
 
-    chamar_llm = nucleo_rag.criar_chamar_llm_gemini(api_key)
+    try:
+        modelo = os.environ.get("GEMINI_MODEL") or st.secrets.get("GEMINI_MODEL")
+    except Exception:
+        modelo = None
+    chamar_llm = nucleo_rag.criar_chamar_llm_gemini(api_key, modelo=modelo)
     return (pipeline_dados.buscar, nucleo_rag.responder_assistente, chamar_llm)
 
 
@@ -416,21 +421,20 @@ def responder(
     banco: pd.DataFrame,
     nucleo_rag=None,
 ):
-    # 1) Banco fixo primeiro, mas só como atalho pra repetição quase
-    #    literal de uma das 60 perguntas de teste — não como resposta
-    #    geral. Com RAG ativo, um cutoff frouxo (0.55) fazia perguntas
-    #    de assunto totalmente diferente "roubarem" a resposta errada do
-    #    CSV por semelhança de estrutura da frase (ex.: "Quais vacinas
-    #    uma criança de 2 meses precisa tomar?" batendo com "Quantas
-    #    doses de dT um adulto precisa tomar?"), escondendo o resultado
-    #    correto que o RAG teria encontrado. Por isso, com o núcleo RAG
-    #    disponível, exigimos quase identidade (0.90); sem RAG (modo
-    #    protótipo original), mantemos o cutoff frouxo de antes.
-    limiar_banco_fixo = 0.90 if nucleo_rag is not None else 0.55
+    # 1) Com o núcleo RAG ativo, TODA pergunta vai pro RAG. O banco fixo
+    #    (CSV de 60 perguntas) virou só conjunto de avaliação: mesmo com
+    #    limiar 0.90 ele "roubava" perguntas de estrutura parecida e
+    #    assunto diferente (ex.: "criança de 2 meses" recebendo a resposta
+    #    de dT de adulto), escondendo a resposta certa dos documentos.
+    if nucleo_rag is not None:
+        return responder_via_rag(pergunta_usuario, nucleo_rag)
+
+    # 2) Modo protótipo (sem RAG configurado): mantém o atalho do banco
+    #    fixo com o cutoff frouxo original, sinalizado como "banco fixo".
     linha = encontrar_resposta_fixa(
         pergunta_usuario,
         banco,
-        limiar=limiar_banco_fixo,
+        limiar=0.55,
     )
 
     if linha is not None:
@@ -443,12 +447,6 @@ def responder(
             ).lower() == "sim",
             "banco fixo"
         )
-
-    # 2) Sem match no banco fixo: se o núcleo RAG estiver disponível e
-    #    configurado, usa ele (busca semântica real + LLM) em vez do
-    #    classificador por palavra-chave.
-    if nucleo_rag is not None:
-        return responder_via_rag(pergunta_usuario, nucleo_rag)
 
     # 3) Sem RAG disponível (ainda não configurado): fallback pro
     #    classificador por palavra-chave, igual ao protótipo original.
@@ -551,11 +549,15 @@ with st.form("form_pergunta"):
 
 if enviar and pergunta_usuario.strip():
 
-    resposta, categoria, dentro_escopo, origem = responder(
-        pergunta_usuario,
-        banco,
-        nucleo_rag,
-    )
+    inicio = time.perf_counter()
+    with st.spinner("Buscando nos documentos oficiais..."):
+        resposta, categoria, dentro_escopo, origem = responder(
+            pergunta_usuario,
+            banco,
+            nucleo_rag,
+        )
+    # Só o tempo e a origem vão pro log — nunca o texto da pergunta (LGPD)
+    print(f"[tempo] resposta em {time.perf_counter() - inicio:.2f}s ({origem}: {categoria})")
 
     st.markdown("### Resposta")
 
