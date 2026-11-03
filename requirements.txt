@@ -16,3 +16,6 @@ google-genai>=2.20
 
 # Testes
 pytest>=8.0
+
+# Banco hospedado (Supabase/Postgres + pgvector)
+psycopg[binary]>=3.2
