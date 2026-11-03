@@ -58,8 +58,19 @@ def test_extrair_termo_idade():
 def test_extrair_nome_ubs():
     assert pd._extrair_nome_ubs("Qual o endereço da UBS Alto Cafezal?") == "alto cafezal"
     # Regressao: nome duplicado ("UBS UBS ...") tambem precisa funcionar.
-    assert pd._extrair_nome_ubs("Qual o endereço da UBS UBS Alto Cafezal?") == "ubs alto cafezal"
+    assert pd._extrair_nome_ubs("Qual o endereço da UBS UBS ALTO CAFEZAL?") == "alto cafezal"
+    # Aspas e acentos nao podem atrapalhar.
+    assert pd._extrair_nome_ubs('Telefone da USF "Santa Antônieta"?') == "santa antonieta"
     assert pd._extrair_nome_ubs("Quais vacinas uma criança deve tomar?") is None
+
+
+def test_busca_ubs_com_nome_repetido_devolve_bloco_certo():
+    """Caso da demo: 'UBS UBS ALTO CAFEZAL' devolvia resposta generica."""
+    pd.inicializar(pasta_dados=PASTA_DADOS)
+    resultados = pd.buscar("Qual o endereço da UBS UBS ALTO CAFEZAL?")
+    assert len(resultados) == 1
+    assert resultados[0]["fonte"] == "ubs_marilia.txt"
+    assert "alto cafezal" in resultados[0]["trecho"].lower()
 
 
 def test_busca_hibrida_por_idade_encontra_fonte_certa():

@@ -26,6 +26,7 @@ notebook pra não desalinhar as duas versões.
 
 import os
 import re
+import unicodedata
 import uuid
 import chromadb
 import numpy as np
@@ -194,13 +195,25 @@ def gerar_embeddings(textos: list):
 # BANCO VETORIAL
 # ============================================================
 
-PASTA_CHROMA = "chroma_db"
+# Caminho absoluto (ao lado deste arquivo): antes era relativo ao diretório
+# atual, então o índice era criado em dados/ (por causa do chdir em
+# inicializar) e a busca procurava em outro lugar dependendo de onde o app
+# foi iniciado.
+PASTA_CHROMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados", "chroma_db")
 NOME_COLECAO = "faq_ubs_vacinacao"
+_cliente = None
+
+def _cliente_chroma():
+  # Um único cliente por processo (abrir o Chroma a cada pergunta era desperdício)
+  global _cliente
+  if _cliente is None:
+    _cliente = chromadb.PersistentClient(path=PASTA_CHROMA)
+  return _cliente
 
 def montar_banco_vetorial(chunks: list):
   #Gera os embeddings dos chunks e salva no Chroma, persistido em disco (pasta `chroma_db/`), junto com o metadado de fonte de cada chunk
 
-  cliente = chromadb.PersistentClient(path=PASTA_CHROMA)
+  cliente = _cliente_chroma()
 
   #Recria a coleção do zero a cada execução, pra evitar duplicar chunks se você rodar o script mais de uma vez
   try:
@@ -225,7 +238,7 @@ def montar_banco_vetorial(chunks: list):
     metadatas=metadados,
 )
 
-  print(f"[chroma] Banco vetorial salvo em ./{PASTA_CHROMA} com {colecao.count()} chunks.")
+  print(f"[chroma] Banco vetorial salvo em {PASTA_CHROMA} com {colecao.count()} chunks.")
   return colecao
 
 
@@ -250,12 +263,19 @@ def _extrair_termo_idade(pergunta: str):
   unidade = "anos" if "ano" in m.group(2) else "meses"
   return numero, unidade
 
+def _normalizar(texto: str) -> str:
+  #Minúsculas, sem acento e sem aspas — pra comparar nomes de UBS de forma tolerante
+  texto = unicodedata.normalize("NFKD", texto.lower())
+  texto = "".join(c for c in texto if not unicodedata.combining(c))
+  return re.sub(r"[\"'“”‘’]", " ", texto)
+
 def _extrair_nome_ubs(pergunta: str):
   #Detecta o nome de uma UBS/USF citada na pergunta pra devolver só o bloco daquela unidade
-  m = re.search(r'(?:ubs|usf)\s+([a-zà-ÿ\s]+?)(?:[\?\.,]|$)', pergunta.lower())
+  #Tolera repetição ("UBS UBS ALTO CAFEZAL"), aspas e acentos; devolve o nome normalizado
+  m = re.search(r'\b(?:ubs|usf)\s+((?:(?:ubs|usf)\s+)*)([a-z\s]+?)\s*(?:[\?\.,!]|$)', _normalizar(pergunta))
   if not m:
     return None
-  nome = m.group(1).strip()
+  nome = re.sub(r'\s+', ' ', m.group(2)).strip()
   return nome if nome else None
 
 def buscar(pergunta: str, k: int = 3):
@@ -264,7 +284,7 @@ def buscar(pergunta: str, k: int = 3):
     #Se encontrar, extrai o bloco daquela idade e devolve só os nomes das vacinas daquela faixa etária — resposta curta e direta
     #Se não encontrar, ou não houver idade específica na pergunta (ex: perguntas sobre UBS, endereços, telefones), cai para a busca semântica normal
 
-    cliente = chromadb.PersistentClient(path=PASTA_CHROMA)
+    cliente = _cliente_chroma()
     colecao = cliente.get_collection(NOME_COLECAO)
 
     pergunta_limpa = pergunta.strip()
@@ -283,7 +303,7 @@ def buscar(pergunta: str, k: int = 3):
             #cada unidade começa com "UBS NOME EM MAIÚSCULAS" no texto original
             blocos = re.split(r'(?=(?:UBS|USF) [A-ZÀ-Ÿ])', texto_ubs)
             for bloco in blocos:
-                if nome_ubs in bloco.lower():
+                if nome_ubs in re.sub(r'\s+', ' ', _normalizar(bloco)):
                     meta = metadados_da_fonte("ubs_marilia.txt")
                     return [{
                         "fonte": "ubs_marilia.txt",
@@ -464,40 +484,30 @@ def inicializar(pasta_dados: str = ".", forcar_reconstrucao: bool = False):
     """
     global _INICIALIZADO
 
-    import os as _os
-    diretorio_anterior = _os.getcwd()
-    if pasta_dados != ".":
-        _os.chdir(pasta_dados)
+    # Sem os.chdir: mudar o diretório do processo afeta todas as sessões
+    # do Streamlit ao mesmo tempo. Os arquivos são lidos pelo caminho
+    # completo, mas a chave continua sendo só o nome (vira o metadado "fonte").
+    if not forcar_reconstrucao:
+        try:
+            colecao_existente = _cliente_chroma().get_collection(NOME_COLECAO)
+            if colecao_existente.count() > 0:
+                carregar_modelo_embeddings()  # garante que o modelo de embeddings está carregado pra busca
+                _INICIALIZADO = True
+                return
+        except Exception:
+            pass  # índice ainda não existe — segue pra construir
 
-    try:
-        if not forcar_reconstrucao:
-            try:
-                cliente = chromadb.PersistentClient(path=PASTA_CHROMA)
-                colecao_existente = cliente.get_collection(NOME_COLECAO)
-                if colecao_existente.count() > 0:
-                    carregar_modelo_embeddings()  # garante que o modelo de embeddings está carregado pra busca
-                    _INICIALIZADO = True
-                    return
-            except Exception:
-                pass  # índice ainda não existe — segue pra construir
+    documentos_processados = {}
 
-        documentos_processados = {}
-
-        for arquivo in arquivos_pdf:
-            if _os.path.exists(arquivo):
-                documentos_processados[arquivo] = extrair_e_limpar_pdf(arquivo)
+    for lista, extrair in ((arquivos_pdf, extrair_e_limpar_pdf), (arquivos_txt, extrair_e_limpar_txt)):
+        for arquivo in lista:
+            caminho = os.path.join(pasta_dados, arquivo)
+            if os.path.exists(caminho):
+                documentos_processados[arquivo] = extrair(caminho)
             else:
                 print(f"Atenção: Arquivo {arquivo} não encontrado em {pasta_dados!r}.")
 
-        for arquivo in arquivos_txt:
-            if _os.path.exists(arquivo):
-                documentos_processados[arquivo] = extrair_e_limpar_txt(arquivo)
-            else:
-                print(f"Atenção: Arquivo {arquivo} não encontrado em {pasta_dados!r}.")
-
-        chunks = chunkar_documentos(documentos_processados)
-        montar_banco_vetorial(chunks)
-        carregar_modelo_embeddings()
-        _INICIALIZADO = True
-    finally:
-        _os.chdir(diretorio_anterior)
+    chunks = chunkar_documentos(documentos_processados)
+    montar_banco_vetorial(chunks)
+    carregar_modelo_embeddings()
+    _INICIALIZADO = True
