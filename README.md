@@ -19,11 +19,6 @@ Bacharelado em Inteligência Artificial, UNIMAR), desenvolvido em 3 duplas:
 Pergunta do usuário
       │
       ▼
-┌─────────────────────┐   bate com uma das 60 perguntas de teste?
-│  Banco fixo (CSV)    │─── sim (quase idêntica) ──► resposta pronta do CSV
-└─────────────────────┘
-      │ não (ou parecida demais seria arriscado)
-      ▼
 ┌─────────────────────┐
 │  guardrail_pre        │─── pergunta claramente fora do escopo? ──► bloqueada
 │  (rag.py)             │     (sintoma, diagnóstico, medicamento...)
@@ -39,7 +34,7 @@ Pergunta do usuário
       │
       ▼
 ┌─────────────────────┐
-│  contexto suficiente?  │─── não ──► "não encontrei na base oficial"
+│  contexto suficiente?  │─── não ──► "não encontrei" + UBS / Disque Saúde 136
 └─────────────────────┘
       │ sim
       ▼
@@ -88,7 +83,10 @@ testes/
   test_rag.py                testes automatizados dos guardrails e da geração de resposta
   test_pipeline_dados.py     testes automatizados de extração/busca (inclui testes de regressão)
   testar_gemini.py           script manual: testa a chave da API e a inicialização do pipeline
+  test_casos_demo.py         testes dos casos da demonstração + robustez do Gemini
   diagnosticar_chroma.py     script manual: inspeciona o conteúdo do banco vetorial
+  medir_desempenho.py        script manual: tempo de cada etapa (import, índice, busca)
+  calibrar_limiar.py         script manual: distâncias das 60 perguntas, para calibrar o limiar
   inspecionar_pdf.py         script manual: mostra o texto bruto extraído de um PDF
 ```
 
@@ -113,7 +111,9 @@ cd smartfaq
 ```bash
 python -m venv .venv
 
-# Windows:
+# Windows (PowerShell). Se der erro de "execução de scripts desabilitada",
+# rode antes: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+# (ou pule a ativação e use .venv\Scripts\python no lugar de python)
 .venv\Scripts\activate
 # Mac/Linux:
 source .venv/bin/activate
@@ -189,18 +189,24 @@ python testes/inspecionar_pdf.py vacinacao_criancas.pdf
   camada gratuita generosa. O adaptador em `rag.py` é plugável — trocar de
   provedor é só escrever uma nova função `chamar_llm(prompt) -> str`
   (já existe um exemplo pronto para OpenAI em `criar_chamar_llm_openai`).
+- **Modelo do Gemini configurável**: `GEMINI_MODEL` no `secrets.toml` ou
+  variável de ambiente (padrão `gemini-3.8-flash`). A chamada tem timeout de
+  30 s e até 3 tentativas com backoff em cota (429), erro 5xx ou falha de
+  rede. Modelo descontinuado (404) gera erro claro no log
+  (`[llm] ERRO DE CONFIGURAÇÃO`), sem retry.
 - **Limiar de contexto suficiente** (`LIMIAR_DISTANCIA_SUFICIENTE` em
-  `rag.py`, atualmente `0.45`): distância de cosseno acima da qual o sistema
-  considera que não há evidência suficiente para responder. É um ponto de
-  partida razoável para o modelo de embeddings usado
-  (`paraphrase-multilingual-MiniLM-L12-v2`), mas pode (e deve) ser recalibrado
-  com mais perguntas de teste reais.
-- **Banco fixo (CSV) vs. RAG**: o banco de 60 perguntas de teste só responde
-  diretamente quando a pergunta do usuário é *quase idêntica* a uma delas
-  (limiar de similaridade 0.90). Perguntas parecidas mas com conteúdo
-  diferente vão sempre para o RAG — isso evita que o banco fixo "roube"
-  respostas erradas de perguntas que deveriam ser respondidas pelos
-  documentos oficiais.
+  `rag.py`, `0.47`): calibrado com `testes/calibrar_limiar.py`. Nas 60
+  perguntas do banco, as que a base cobre (vacinação) ficaram com distância
+  ≤ 0.434 e todas as outras (clínicas, fora do domínio, agendamento/horário)
+  ≥ 0.504; o limiar fica no meio desse vão. Recalibrar ao adicionar fontes.
+- **Banco fixo (CSV) fora da produção**: com o núcleo RAG ativo, toda
+  pergunta vai para o RAG. O CSV de 60 perguntas serve como conjunto de
+  avaliação e só responde direto no modo protótipo (sem chave de API).
+- **Limitação atual**: a base só tem calendário de vacinação e lista de UBS.
+  Perguntas de agendamento, documentos e horários caem em "não encontrei"
+  até essas fontes entrarem (Fase 2).
+- **Índice vetorial** em `dados/chroma_db` (caminho absoluto), com um único
+  cliente Chroma por processo; o índice só é montado se ainda não existir.
 - **Guardrails em duas camadas**: `guardrail_pre` (antes de chamar o LLM,
   baseado em palavras-chave) e `guardrail_pos` (depois, baseado em padrões de
   texto de risco clínico) — defesa em profundidade, já que nenhuma das duas
