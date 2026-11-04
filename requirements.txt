@@ -1,6 +1,6 @@
 # Interface
-# ponytail: versão fixa. Na 1.66 (servidor uvicorn), o Streamlit Cloud devolvia erro 500 em
-# 15% dos arquivos da página. Testar outra versão no app publicado antes de subir.
+# Versão fixa: no Streamlit Cloud, a 1.66 falhou nas 3 cargas de teste e a 1.50 carregou nas 3.
+# A causa não foi confirmada. Testar no app publicado antes de subir a versão.
 streamlit==1.50.0
 
 # Dados

@@ -164,6 +164,8 @@ Sem chave, mostra **🟡 Modo protótipo**: responde direto da tabela de pergunt
 
 ## Publicação
 
+App no ar: **https://smartfaqfpa.streamlit.app/**
+
 - **App:** [Streamlit Community Cloud](https://share.streamlit.io), que publica a
   partir do GitHub. *Main file:* `app.py`; Python 3.12. Em *Advanced settings >
   Secrets*, cole `GEMINI_API_KEY` e `DATABASE_URL`, como no `secrets.toml`.

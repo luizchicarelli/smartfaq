@@ -31,6 +31,12 @@
   **O que fazer:** decidir se vale ativar o faturamento no Google AI Studio e conferir
   os preços lá. Evitar testes do app nas horas anteriores à apresentação.
 
+- [ ] **Abrir o app antes da apresentação.**
+  O Streamlit Cloud coloca o app para dormir depois de 12 h sem acesso, e a primeira
+  carga é lenta. Às vezes um arquivo da página falha e aparece um erro vermelho ou a
+  tela fica em branco: nesse caso, recarregue a página (F5). A causa não foi confirmada
+  (a plataforma estava sem incidentes). Tenham prints ou um vídeo como plano B.
+
 ## Limitações conhecidas
 
 - [ ] **Agendamento do GitHub Actions:** o GitHub desliga o agendamento depois de 60 dias
