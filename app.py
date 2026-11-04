@@ -442,7 +442,7 @@ st.title(
 )
 
 st.caption(
-    "Protótipo de interface · Bacharelado em "
+    "Projeto acadêmico · Bacharelado em "
     "Inteligência Artificial · Universidade de Marília"
 )
 

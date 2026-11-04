@@ -33,6 +33,9 @@
 
 ## Limitações conhecidas
 
+- [ ] **Agendamento do GitHub Actions:** o GitHub desliga o agendamento depois de 60 dias
+  sem atividade no repositório, e avisa por e-mail. Basta reativar na aba *Actions*.
+
 - [ ] **Horários faltando em 4 de 58 unidades:** USF Avencas Amadeu Amaral, USF Jardim
   Cavalari, USF São Bento e USF Vida Nova Maracá. A página da Secretaria não traz um
   horário utilizável para algumas delas, ou o nome não casou com o do CNES. O assistente

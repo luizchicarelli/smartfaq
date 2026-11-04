@@ -162,6 +162,18 @@ streamlit run app.py
 A barra lateral mostra **🟢 Núcleo RAG ativo** quando chave e banco estão certos.
 Sem chave, mostra **🟡 Modo protótipo**: responde direto da tabela de perguntas.
 
+## Publicação
+
+- **App:** [Streamlit Community Cloud](https://share.streamlit.io), que publica a
+  partir do GitHub. *Main file:* `app.py`; Python 3.12. Em *Advanced settings >
+  Secrets*, cole `GEMINI_API_KEY` e `DATABASE_URL`, como no `secrets.toml`.
+- **Atualização dos dados:** `.github/workflows/atualizar_dados.yml` roda o job
+  todo dia e pode ser disparado à mão na aba *Actions*. Precisa do segredo
+  `DATABASE_URL` no repositório. Se uma fonte falhar, o job fica vermelho e os
+  dados anteriores continuam valendo.
+- **Acesso direto ao banco:** o repositório vetorial não ganhou camada de
+  abstração porque só há um banco; isso fica para quando houver um segundo.
+
 ## Como rodar os testes
 
 ```bash

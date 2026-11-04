@@ -1,0 +1,25 @@
+name: Atualizar dados
+
+on:
+  schedule:
+    - cron: "0 9 * * *"  # todo dia, 06h em Brasília; também evita a pausa do Supabase por inatividade
+  workflow_dispatch:      # botão "Run workflow" na aba Actions
+
+permissions:
+  contents: read
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Rodar o job de ingestão
+        run: python atualizar_dados.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
