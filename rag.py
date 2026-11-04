@@ -28,7 +28,9 @@ passa uma função `chamar_llm(prompt: str) -> str`. Veja os adaptadores
 de exemplo (Gemini/OpenAI/mock) no final do arquivo.
 """
 
+import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -37,13 +39,14 @@ from typing import Callable, Optional
 # CONFIGURAÇÃO
 # ============================================================
 
-# Limiar de distância de cosseno (Chroma) acima do qual consideramos que
+# Limiar de distância de cosseno (pgvector) acima do qual consideramos que
 # não há evidência suficiente na base para responder.
-# Precisa ser calibrado com testes reais (D15) assim que o índice estiver
-# rodando de verdade — 0.45 é um ponto de partida razoável pra embeddings
-# do paraphrase-multilingual-MiniLM-L12-v2 com chunks curtos, não é valor
-# definitivo. Registrar o valor final escolhido no README (seção 26).
-LIMIAR_DISTANCIA_SUFICIENTE = 0.45
+# Calibrado com testes/calibrar_limiar.py sobre a Instrução Normativa 2026:
+# perguntas que a base cobre ficam com distância <= 0.389; as que ela não cobre
+# (agendamento, prazo, horário) a partir de 0.436. 0.41 fica nesse vão. Pergunta
+# clínica com distância baixa é barrada antes pelo guardrail_pre.
+# Recalibre ao adicionar fontes.
+LIMIAR_DISTANCIA_SUFICIENTE = 0.41
 
 PROMPT_SISTEMA = """Você é um assistente informativo de uma UBS/Posto de Saúde.
 
@@ -57,8 +60,15 @@ Regras obrigatórias:
 4. NUNCA forneça diagnóstico médico, prescrição, recomendação de tratamento ou
    qualquer orientação clínica, mesmo que a pergunta pareça pedir isso. Nesses
    casos, oriente a pessoa a procurar a UBS/profissional de saúde.
-5. Seja direto e objetivo. Não repita o contexto literalmente — responda à
-   pergunta em linguagem natural, citando as fontes usadas ao final.
+5. Se um trecho limitar o público da vacina (ex.: "em casos excepcionais",
+   "trabalhador de saúde", "acamado"), mantenha essa condição na resposta.
+6. Se a pergunta pedir uma lista de vacinas, inclua TODAS as vacinas presentes
+   nos trechos, inclusive as indicadas para "toda a população" e as citadas
+   dentro do esquema de outra vacina (ex.: dT no esquema da dTpa). Lista
+   incompleta é um erro grave. Não atribua a um grupo a indicação de outro grupo.
+7. Seja direto e objetivo. Não repita o contexto literalmente — responda à
+   pergunta em linguagem natural. Não cite fontes nem trechos: o sistema
+   acrescenta a fonte oficial automaticamente ao final.
 """
 
 
@@ -90,6 +100,10 @@ class ResultadoRAG:
 # colidiam com vocabulário normal de pergunta de vacinação).
 
 PALAVRAS_FORA_ESCOPO = [
+    # Remédios e sintomas que não dependem do limiar pra serem recusados
+    "antibiótico", "antibiotico", "antialérgico", "antialergico", "amoxicilina",
+    "diarreia", "tontura", "infecção", "infeccao", "ferida", "vômito", "vomito",
+    "enjoo", "de risco",
     "dor", "febre", "sintoma", "diagnóstic", "diagnostic", "câncer", "cancer",
     "mancha", "tosse", "remédio", "remedio", "medicamento",
     "ibuprofeno", "dipirona", "paracetamol", "genérico", "generico", "cirurgia",
@@ -262,15 +276,44 @@ def extrair_fontes(resultados_busca: list) -> list:
     return fontes
 
 
+def _descrever_fontes(resultados_busca: list) -> str:
+    """Título, data da última atualização e link de cada fonte usada."""
+    descricoes = {}
+    for r in resultados_busca:
+        fonte = r.get("fonte", "").strip()
+        if not fonte or fonte in descricoes:
+            continue
+        descricao = r.get("titulo") or fonte
+        if r.get("atualizado_em"):
+            descricao += f" (atualizado em {r['atualizado_em']:%d/%m/%Y})"
+        if r.get("url"):
+            descricao += f" — {r['url']}"
+        descricoes[fonte] = descricao
+    return "; ".join(descricoes.values())
+
+
 # ============================================================
 # NÚCLEO RAG (D11) — monta prompt, chama LLM, aplica guardrail_pos
 # ============================================================
 
 MENSAGEM_SEM_EVIDENCIA = (
     "Não encontrei informação suficiente na base de dados oficial para "
-    "responder a essa pergunta com segurança. Recomendo entrar em contato "
-    "diretamente com a UBS/Posto de Saúde mais próximo."
+    "responder a essa pergunta com segurança. Para confirmar, procure a "
+    "UBS/Posto de Saúde mais próximo, ligue para a Secretaria Municipal da "
+    "Saúde de Marília, (14) 3402-6500, ou para o Disque Saúde 136 (gratuito)."
 )
+
+MENSAGEM_ERRO_GERACAO = (
+    "Não foi possível gerar a resposta no momento (o serviço de IA está "
+    "indisponível ou sobrecarregado). Tente novamente em alguns instantes. "
+    "Se for urgente, procure a UBS mais próxima ou ligue para o Disque "
+    "Saúde 136."
+)
+
+
+class ErroModeloLLM(RuntimeError):
+    """Modelo de LLM configurado não existe/foi descontinuado (ex.: 404).
+    Não adianta tentar de novo: é erro de configuração (GEMINI_MODEL)."""
 
 
 def gerar_resposta(
@@ -301,12 +344,20 @@ def gerar_resposta(
 
     try:
         texto_resposta = chamar_llm(prompt)
-    except Exception:
+    except ErroModeloLLM as erro:
+        # Erro de configuração: precisa aparecer claramente no log, não sumir
+        print(f"[llm] ERRO DE CONFIGURAÇÃO: {erro}")
         return ResultadoRAG(
-            resposta=(
-                "Não foi possível gerar a resposta no momento. "
-                "Tente novamente em instantes."
-            ),
+            resposta=MENSAGEM_ERRO_GERACAO,
+            fontes=[],
+            status="erro_modelo",
+            origem_contexto=origem,
+            dentro_escopo=None,
+        )
+    except Exception as erro:
+        print(f"[llm] Falha ao gerar resposta: {type(erro).__name__}")
+        return ResultadoRAG(
+            resposta=MENSAGEM_ERRO_GERACAO,
             fontes=[],
             status="erro_geracao",
             origem_contexto=origem,
@@ -328,8 +379,7 @@ def gerar_resposta(
 
     fontes = extrair_fontes(resultados_busca)
     if fontes:
-        lista_fontes = ", ".join(fontes)
-        texto_resposta = f"{texto_resposta}\n\nFonte(s): {lista_fontes}"
+        texto_resposta = f"{texto_resposta}\n\nFonte(s): {_descrever_fontes(resultados_busca)}"
 
     return ResultadoRAG(
         resposta=texto_resposta,
@@ -346,7 +396,8 @@ def gerar_resposta(
 
 MENSAGEM_ERRO_BUSCA = (
     "Não foi possível consultar a base de informações no momento. "
-    "Tente novamente em instantes."
+    "Tente novamente em instantes. Se for urgente, procure a UBS mais "
+    "próxima ou ligue para o Disque Saúde 136."
 )
 
 MENSAGEM_PERGUNTA_VAZIA = "Digite uma pergunta antes de enviar."
@@ -420,16 +471,75 @@ def criar_chamar_llm_mock() -> Callable[[str], str]:
     return chamar
 
 
-def criar_chamar_llm_gemini(api_key: str, modelo: str = "gemini-3.8-flash") -> Callable[[str], str]:
+MODELO_GEMINI_PADRAO = "gemini-3.8-flash"
+MODELOS_GEMINI_RESERVA = ["gemini-3.5-flash", "gemini-flash-lite-latest"]
+
+
+def criar_chamar_llm_gemini(
+    api_key: str,
+    modelo: Optional[str] = None,
+    reservas: Optional[list] = None,
+    timeout_s: float = 20,
+    tentativas: int = 2,
+) -> Callable[[str], str]:
     """
-    Adaptador pra Google Gemini (grátis via Google AI Studio, funciona
-    bem em Colab). Requer: pip install google-genai
+    Adaptador pra Google Gemini (grátis via Google AI Studio).
+    Requer: pip install google-genai
+
+    - Modelos configuráveis: `modelo`/GEMINI_MODEL e `reservas`/GEMINI_MODELS_RESERVA
+      (separados por vírgula). A cota gratuita é por modelo: 20 pedidos por dia
+      em 04/11/2026, então cada reserva também dá mais fôlego.
+    - Em sobrecarga (503/504), cota (429) ou falha de rede passa NA HORA pro
+      modelo reserva: esperar o mesmo modelo não adianta num pico de demanda,
+      e foi isso que travou a demo. Se todos falharem, espera (1s, 2s...) e
+      tenta a rodada de novo.
+    - Modelo inexistente/descontinuado (404) sai da rodada com erro claro no
+      log; se não sobrar nenhum, levanta ErroModeloLLM.
     """
+    from google import genai
+    from google.genai import errors, types
+
+    reservas_env = [m.strip() for m in os.environ.get("GEMINI_MODELS_RESERVA", "").split(",") if m.strip()]
+    modelos = list(dict.fromkeys([
+        modelo or os.environ.get("GEMINI_MODEL") or MODELO_GEMINI_PADRAO,
+        *(reservas if reservas is not None else reservas_env or MODELOS_GEMINI_RESERVA),
+    ]))
+    cliente = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=int(timeout_s * 1000)),
+    )
+
     def chamar(prompt: str) -> str:
-        from google import genai
-        cliente = genai.Client(api_key=api_key)
-        resposta = cliente.models.generate_content(model=modelo, contents=prompt)
-        return resposta.text
+        descontinuados = set()
+        ultimo_erro = None
+        for tentativa in range(tentativas):
+            for nome in modelos:
+                if nome in descontinuados:
+                    continue
+                try:
+                    resposta = cliente.models.generate_content(model=nome, contents=prompt)
+                    return resposta.text or ""
+                except errors.APIError as erro:
+                    if erro.code == 404:
+                        ultimo_erro = ErroModeloLLM(
+                            f"modelo '{nome}' não encontrado ou descontinuado — "
+                            "ajuste GEMINI_MODEL nos secrets/variáveis de ambiente"
+                        )
+                        print(f"[llm] ERRO DE CONFIGURAÇÃO: {ultimo_erro}")
+                        descontinuados.add(nome)
+                    elif erro.code != 429 and (erro.code or 0) < 500:
+                        raise  # 400/401/403: tentar de novo não resolve
+                    else:
+                        print(f"[llm] {nome} indisponível (HTTP {erro.code})")
+                        ultimo_erro = erro
+                except Exception as erro:  # timeout / rede
+                    print(f"[llm] {nome} falhou: {type(erro).__name__}")
+                    ultimo_erro = erro
+            if len(descontinuados) == len(modelos):
+                break
+            if tentativa < tentativas - 1:
+                time.sleep(2 ** tentativa)
+        raise ultimo_erro
     return chamar
 
 
@@ -455,7 +565,7 @@ def criar_chamar_llm_openai(api_key: str, modelo: str = "gpt-4o-mini") -> Callab
 if __name__ == "__main__":
 
     def _buscar_mock(pergunta, k=3):
-        """Simula o `buscar()` da Dupla 1 sem precisar do Chroma/embeddings."""
+        """Simula o `buscar()` da Dupla 1 sem precisar do banco/embeddings."""
         mapa = {
             "2 meses": [{
                 "fonte": "vacinacao_criancas.pdf",
@@ -476,7 +586,7 @@ if __name__ == "__main__":
         return []
 
     def _buscar_que_falha(pergunta, k=3):
-        raise RuntimeError("Chroma indisponível (simulação de falha)")
+        raise RuntimeError("Banco indisponível (simulação de falha)")
 
     chamar_llm_mock = criar_chamar_llm_mock()
 

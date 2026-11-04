@@ -1,37 +1,26 @@
 """
-PIPELINE DE DADOS — Dupla 1 (D1-D3, D8-D10) — versão importável
+PIPELINE DE DADOS — Dupla 1 (D1-D3, D8-D10)
 ==================================================================
 
-Extraído do notebook `FAQ_inteligente.ipynb` pra virar um módulo Python
-comum, que tanto o `rag.py` (Dupla 2) quanto o `app.py` (Dupla 3) podem
-importar diretamente — notebook `.ipynb` não dá pra importar, só rodar
-célula por célula, então esse é o elo que faltava pra integração (I2).
+Extração, chunking, embeddings e busca. Os dados moram no Supabase e são
+carregados pelo job `atualizar_dados.py`; aqui só se lê o banco.
 
 Uso:
 
     import pipeline_dados
-    pipeline_dados.inicializar()          # roda extração+chunking+embeddings
-                                           # +índice vetorial (1x só; se o
-                                           # índice já existir em disco, pula
-                                           # a reconstrução, a não ser que
-                                           # forcar_reconstrucao=True)
+    pipeline_dados.inicializar()   # carrega o modelo de embeddings (1x só)
     resultados = pipeline_dados.buscar("Quais vacinas uma criança de 2 meses precisa tomar?")
-
-O notebook original continua existindo e funcionando normalmente — esse
-módulo só espelha a mesma lógica (mesmas funções, mesmo texto) num
-arquivo `.py`, pra poder ser importado fora do Jupyter/Colab.
-Qualquer ajuste feito aqui (e vice-versa) precisa ser replicado no
-notebook pra não desalinhar as duas versões.
 """
 
-import os
+import difflib
 import re
-import uuid
-import chromadb
-import numpy as np
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
-from langchain_community.document_loaders import PyPDFLoader
+import unicodedata
+
+from psycopg.rows import dict_row
+
+import banco_dados
+from fastembed import TextEmbedding
+from pypdf import PdfReader
 
 
 # ============================================================
@@ -40,11 +29,9 @@ from langchain_community.document_loaders import PyPDFLoader
 
 def extrair_e_limpar_pdf(caminho_arquivo):
   #Extrai e limpa o texto de um arquivo PDF
-  loader = PyPDFLoader(caminho_arquivo)
-  paginas = loader.load()
   texto_completo = ""
-  for pagina in paginas:
-    texto = pagina.page_content
+  for pagina in PdfReader(caminho_arquivo).pages:
+    texto = pagina.extract_text() or ""
     #Substitui ligaturas comuns, como 'ﬂ' (U+FB02) por 'fl'
     texto = texto.replace('ﬂ', 'fl')
     # FIX (causa raiz real): a regex antiga usava "meses?"/"anos?" (o "s" como
@@ -70,101 +57,42 @@ def extrair_e_limpar_pdf(caminho_arquivo):
   texto_completo = re.sub(r"\s+\.", ".", texto_completo)
   return texto_completo.strip()
 
-def extrair_e_limpar_txt(caminho_arquivo):
-  """Extrai e limpa o texto de um arquivo .txt (ex: lista de UBS)."""
-  with open(caminho_arquivo, "r", encoding="utf-8") as f:
-    texto = f.read()
-  texto = re.sub(r"\n", " ", texto)
-  texto = re.sub(r"\s+", " ", texto)
-  return texto.strip()
-
-
-# ============================================================
-# METADADOS DE RASTREABILIDADE DAS FONTES
-# ============================================================
-
-# Metadados de rastreabilidade por fonte (card D1/D3 — seção 7.2 da documentação:
-# título, URL/referência, origem/tipo do documento).
-# URL do calendário de vacinação verificada em: https://www.gov.br/saude/pt-br/vacinacao/calendario
-# (página oficial do Ministério da Saúde que reúne os calendários por faixa etária).
-METADADOS_FONTES = {
-  "vacinacao_criancas.pdf": {
-    "titulo": "Calendário Nacional de Vacinação 2026 — Vacinas da Criança (0 a 9 anos, 11 meses e 29 dias)",
-    "url": "https://www.gov.br/saude/pt-br/vacinacao/calendario",
-    "orgao": "Ministério da Saúde",
-    "tipo": "PDF oficial",
-  },
-  "vacinacao_adolescentes.pdf": {
-    "titulo": "Calendário Nacional de Vacinação 2026 — Vacinas do Adolescente e do Jovem",
-    "url": "https://www.gov.br/saude/pt-br/vacinacao/calendario",
-    "orgao": "Ministério da Saúde",
-    "tipo": "PDF oficial",
-  },
-  "vacinacao_adultos.pdf": {
-    "titulo": "Calendário Nacional de Vacinação 2026 — Vacinas do Adulto (25 a 59 anos, 11 meses e 29 dias)",
-    "url": "https://www.gov.br/saude/pt-br/vacinacao/calendario",
-    "orgao": "Ministério da Saúde",
-    "tipo": "PDF oficial",
-  },
-  "vacinacao_idosos.pdf": {
-    "titulo": "Calendário Nacional de Vacinação 2026 — Vacinas do Idoso (a partir de 60 anos)",
-    "url": "https://www.gov.br/saude/pt-br/vacinacao/calendario",
-    "orgao": "Ministério da Saúde",
-    "tipo": "PDF oficial",
-  },
-  "vacinacao_gestante.pdf": {
-    "titulo": "Calendário Nacional de Vacinação 2026 — Vacinas da Gestante",
-    "url": "https://www.gov.br/saude/pt-br/vacinacao/calendario",
-    "orgao": "Ministério da Saúde",
-    "tipo": "PDF oficial",
-  },
-  "ubs_marilia.txt": {
-    "titulo": "Unidades Básicas de Saúde (UBS/USF) de Marília",
-    "url": "https://saude.marilia.sp.gov.br/-unidades-basicas-de-saude/",
-    "orgao": "Secretaria Municipal da Saúde de Marília",
-    "tipo": "Página oficial (lista de unidades)",
-  },
-}
-
-def metadados_da_fonte(nome_arquivo: str) -> dict:
-  # Fallback seguro: se um arquivo novo for adicionado e esquecerem de
-  # registrar aqui, não quebra o pipeline — só fica sem título/URL.
-  return METADADOS_FONTES.get(nome_arquivo, {
-    "titulo": nome_arquivo,
-    "url": None,
-    "orgao": None,
-    "tipo": None,
-  })
-
-
 # ============================================================
 # CHUNKING
 # ============================================================
 
-def chunkar_documentos(documentos_processados: dict, tamanho_chunk=2000, sobreposicao_chunk=0):
-  #Recebe {nome_arquivo: texto_limpo} e devolve uma lista de chunks, cada um com id único, texto e metadados de origem (fonte, título, URL, órgão)
-  #Sobreposicao_chunk=0: a função `buscar` já junta o texto do documento inteiro quando precisa de mais contexto, então sobrepor os chunks aqui só causaria texto duplicado nas respostas
+def secoes_por_vacina(texto: str) -> list:
+  #A Instrução Normativa é dividida em "N. Vacina ...", depois de uma lista inicial com os mesmos títulos.
+  #Devolve [(titulo, corpo)], usando a ÚLTIMA ocorrência de cada número pra pular essa lista
+  posicoes = {}
+  for m in re.finditer(r'(?<!\d)(\d{1,2})\. Vacina ', texto):
+    posicoes[m.group(1)] = m.start()
+  inicios = sorted(posicoes.values())
+  if not inicios:
+    return [("", texto)]
 
-  splitter = RecursiveCharacterTextSplitter(
-    chunk_size=tamanho_chunk,
-    chunk_overlap=sobreposicao_chunk,
-    separators=["\n\n", ""],  #simplificado para priorizar o tamanho do chunk
-)
+  secoes = [("", texto[:inicios[0]])]
+  for inicio, fim in zip(inicios, inicios[1:] + [len(texto)]):
+    secao = texto[inicio:fim]
+    #O título vai até "Indicação", que abre o corpo de cada seção
+    titulo = re.split(r'\s+Indicação\b', secao, maxsplit=1)[0][:120].strip()
+    titulo = re.sub(r'^\d{1,2}\.\s*', '', titulo)
+    secoes.append((titulo, secao))
+  return secoes
 
+def chunkar_documentos(documentos_processados: dict, tamanho_chunk=2000):
+  #Recebe {nome_da_fonte: texto_limpo} e devolve uma lista de chunks, cada um com texto, fonte e posição
   chunks = []
-  for nome_arquivo, texto in documentos_processados.items():
-    meta_fonte = metadados_da_fonte(nome_arquivo)
-    pedacos = splitter.split_text(texto)
-    for i, pedaco in enumerate(pedacos):
-      chunks.append({
-        "id": str(uuid.uuid4()),
-        "texto": pedaco,
-        "fonte": nome_arquivo,
-        "chunk_index": i,
-        "titulo": meta_fonte["titulo"],
-        "url": meta_fonte["url"],
-        "orgao": meta_fonte["orgao"],
-})
+  for nome, texto in documentos_processados.items():
+    i = 0
+    for titulo, corpo in secoes_por_vacina(texto):
+      for inicio in range(0, len(corpo), tamanho_chunk):
+        pedaco = corpo[inicio:inicio + tamanho_chunk].strip()
+        if not pedaco:
+          continue
+        #Repete o nome da vacina em cada chunk: sem isso, um pedaço do meio da seção não diz de qual vacina fala
+        chunks.append({"texto": f"[{titulo}] {pedaco}" if titulo else pedaco, "fonte": nome, "chunk_index": i})
+        i += 1
 
   print(f"[chunking] {len(chunks)} chunks gerados a partir de {len(documentos_processados)} documentos.")
   return chunks
@@ -175,59 +103,25 @@ def chunkar_documentos(documentos_processados: dict, tamanho_chunk=2000, sobrepo
 # ============================================================
 
 #Modelo multilíngue leve e com bom desempenho em português
-MODELO_EMBEDDINGS = "paraphrase-multilingual-MiniLM-L12-v2"
+# fastembed roda o mesmo modelo sem PyTorch (vetores idênticos, cerca de metade da
+# memória), o que cabe na hospedagem gratuita. Trocar de modelo exige `atualizar_dados.py --forcar`
+MODELO_EMBEDDINGS = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 _modelo = None
 
 def carregar_modelo_embeddings():
   global _modelo
   if _modelo is None:
     print(f"[embeddings] Carregando modelo '{MODELO_EMBEDDINGS}'...")
-    _modelo = SentenceTransformer(MODELO_EMBEDDINGS)
+    _modelo = TextEmbedding(MODELO_EMBEDDINGS)
   return _modelo
 
 def gerar_embeddings(textos: list):
   modelo = carregar_modelo_embeddings()
-  return modelo.encode(textos, show_progress_bar=True).tolist()
+  return [v.tolist() for v in modelo.embed(textos)]
 
 
-# ============================================================
-# BANCO VETORIAL
-# ============================================================
-
-PASTA_CHROMA = "chroma_db"
-NOME_COLECAO = "faq_ubs_vacinacao"
-
-def montar_banco_vetorial(chunks: list):
-  #Gera os embeddings dos chunks e salva no Chroma, persistido em disco (pasta `chroma_db/`), junto com o metadado de fonte de cada chunk
-
-  cliente = chromadb.PersistentClient(path=PASTA_CHROMA)
-
-  #Recria a coleção do zero a cada execução, pra evitar duplicar chunks se você rodar o script mais de uma vez
-  try:
-    cliente.delete_collection(NOME_COLECAO)
-  except Exception:
-    pass
-  #"cosine" funciona bem melhor que o padrão (L2) para embeddings de sentence-transformers, principalmente com chunks curtos/tabulares
-  colecao = cliente.create_collection(
-    NOME_COLECAO, metadata={"hnsw:space": "cosine"}
-)
-
-  textos = [c["texto"] for c in chunks]
-  ids = [c["id"] for c in chunks]
-  metadados = [{"fonte": c["fonte"], "chunk_index": c["chunk_index"], "titulo": c.get("titulo") or "", "url": c.get("url") or "", "orgao": c.get("orgao") or ""} for c in chunks]
-
-  embeddings = gerar_embeddings(textos)
-
-  colecao.add(
-    ids=ids,
-    embeddings=embeddings,
-    documents=textos,
-    metadatas=metadados,
-)
-
-  print(f"[chroma] Banco vetorial salvo em ./{PASTA_CHROMA} com {colecao.count()} chunks.")
-  return colecao
-
+# Município usado enquanto o app atende só Marília
+CODIGO_IBGE_PADRAO = "352900"
 
 # ============================================================
 # FUNÇÃO DE BUSCA
@@ -250,254 +144,226 @@ def _extrair_termo_idade(pergunta: str):
   unidade = "anos" if "ano" in m.group(2) else "meses"
   return numero, unidade
 
+def trechos_da_idade(numero: str, unidade: str, chunks: list) -> list:
+  #Pergunta por idade: a IN é organizada por vacina, então a resposta está espalhada em várias seções.
+  #Pega TODA vacina com "aos 2 meses" / "aos 2 meses, 4 meses e 6 meses" na agenda. Cortar em k daria uma
+  #lista de vacinas incompleta, que é pior que não responder. Devolve [(fonte, trecho)]
+  padrao = re.compile(
+    rf'\baos?\s+(?:\d+\s*(?:m[eê]s(?:es)?|anos?)\s*(?:,|e)\s*)*{re.escape(numero)}\s*{re.escape(unidade)}\b',
+    re.IGNORECASE,
+  )
+  trechos = []
+  for texto, fonte in chunks:
+    m = padrao.search(texto)
+    if m:
+      titulo = texto[:texto.index("]") + 1] if texto.startswith("[") else ""
+      trechos.append((fonte, f"{titulo} ...{texto[max(0, m.start() - 150):m.end() + 200]}..."))
+  return trechos
+
+def _normalizar(texto: str) -> str:
+  #Minúsculas, sem acento e sem aspas — pra comparar nomes de UBS de forma tolerante
+  texto = unicodedata.normalize("NFKD", texto.lower())
+  texto = "".join(c for c in texto if not unicodedata.combining(c))
+  return re.sub(r"[\"'“”‘’]", " ", texto)
+
 def _extrair_nome_ubs(pergunta: str):
   #Detecta o nome de uma UBS/USF citada na pergunta pra devolver só o bloco daquela unidade
-  m = re.search(r'(?:ubs|usf)\s+([a-zà-ÿ\s]+?)(?:[\?\.,]|$)', pergunta.lower())
+  #Tolera repetição ("UBS UBS ALTO CAFEZAL"), aspas e acentos; devolve o nome normalizado
+  m = re.search(r'\b(?:ubs|usf|posto|unidade)\s+((?:(?:ubs|usf)\s+)*)([a-z\s]+?)\s*(?:[\?\.,!]|$)', _normalizar(pergunta))
   if not m:
     return None
-  nome = m.group(1).strip()
+  nome = re.sub(r'\s+', ' ', m.group(2)).strip()
   return nome if nome else None
 
-def buscar(pergunta: str, k: int = 3):
-    #Recebe uma pergunta em português, devolve os `k` trechos mais relevantes e a fonte (nome do documento) de cada um
-    #Busca híbrida: se a pergunta menciona uma idade específica (ex: "2 meses"), primeiro procura chunks que citam essa idade literalmente no texto
-    #Se encontrar, extrai o bloco daquela idade e devolve só os nomes das vacinas daquela faixa etária — resposta curta e direta
-    #Se não encontrar, ou não houver idade específica na pergunta (ex: perguntas sobre UBS, endereços, telefones), cai para a busca semântica normal
+def texto_da_unidade(unidade: dict, municipio: str = "") -> str:
+  #Texto de uma unidade do CNES: o que o LLM recebe e o que vira chunk na busca semântica
+  partes = [
+    unidade["nome"],
+    f"Endereço: {unidade['endereco']}" + (f", bairro {unidade['bairro']}" if unidade["bairro"] else ""),
+    f"Telefone: {unidade['telefone']}" if unidade["telefone"] else "",
+    f"E-mail: {unidade['email']}" if unidade["email"] else "",
+    f"Atendimento: {unidade['turno']}" if unidade["turno"] else "",
+    f"Município: {municipio}" if municipio else "",
+  ]
+  return ". ".join(p for p in partes if p) + "."
 
-    cliente = chromadb.PersistentClient(path=PASTA_CHROMA)
-    colecao = cliente.get_collection(NOME_COLECAO)
+# Faixa etária de cada grupo, em anos. Gestante não tem faixa de propósito: vacina
+# "para a população de X a Y anos" pode ser contraindicada na gravidez (ex.: tríplice viral)
+FAIXAS_GRUPOS = {"idoso": (60, 130), "adulto": (25, 59), "adolescente": (10, 24), "crianca": (0, 9)}
+PADROES_GRUPOS = {"idoso": r'\bidos|superior a 60', "adulto": r'\badult', "adolescente": r'\badolescente',
+                  "gestante": r'\bgestante', "crianca": r'\bcrianca'}
+
+def _extrair_grupo(pergunta: str):
+  #"Quais vacinas um idoso deve tomar?" / "vacinas aos 65 anos": pede a lista do grupo, não uma vacina específica
+  norm = _normalizar(pergunta)
+  if not re.search(r'\bvacinas\b|\bquais\b.*\bvacinas?\b', norm):
+    return None
+  for grupo in PADROES_GRUPOS:
+    if re.search(rf'\b{grupo}s?\b', norm):
+      return grupo
+  m = re.search(r'(\d+)\s*anos?\b', norm)
+  if m:
+    for grupo, (inicio, fim) in FAIXAS_GRUPOS.items():
+      if inicio <= int(m.group(1)) <= fim:
+        return grupo
+  return None
+
+def _item_vale_para_grupo(item: str, grupo: str) -> bool:
+  #Um item do público de uma vacina (ex.: "População a partir de 7 anos de idade") vale para o grupo?
+  item = _normalizar(item)
+  #"toda a população indígena" é povo específico, não toda a população: pegava varicela, contraindicada na gestante
+  if re.search(r'toda a populacao(?! indigena)', item) or re.search(PADROES_GRUPOS[grupo], item):
+    return True
+  if grupo not in FAIXAS_GRUPOS:
+    return False
+  #Trabalhador de saúde e povos indígenas têm indicação sem limite de idade; a condição vai junto no trecho
+  if re.search(r'qualquer faixa etaria|trabalhador|povos indigenas', item):
+    return True
+  m = re.search(r'populacao (?:em geral: )?(?:a partir d[eo]s? |com idade entre )(\d+) (mes\w*|anos?)', item)
+  if not m:
+    return False
+  inicio = int(m.group(1)) / (1 if m.group(2).startswith("ano") else 12)
+  fim_m = re.search(r'(?:ate|\be)\s+(?:os\s+)?(\d+) anos', item[m.end():])
+  fim = int(fim_m.group(1)) if fim_m else 130
+  faixa_inicio, faixa_fim = FAIXAS_GRUPOS[grupo]
+  return inicio <= faixa_fim and fim >= faixa_inicio
+
+def trechos_do_grupo(grupo: str, chunks: list) -> list:
+  #A IN abre cada vacina com o público recomendado. Traz toda vacina em que algum item do público vale para o
+  #grupo, com o bloco inteiro: a condição ("em casos excepcionais", "trabalhador de saúde") precisa chegar ao LLM
+  secoes = {}
+  for texto, fonte in chunks:
+    if texto.startswith("["):
+      titulo = texto[:texto.index("] ") + 1]
+      secoes.setdefault((titulo, fonte), []).append(texto[len(titulo):])
+
+  trechos = []
+  for (titulo, fonte), partes in secoes.items():
+    secao = " ".join(partes)
+    m = re.search(r'Idade para vacinação(?: e/ou |/)grupo recomendado(.*?)Esquema de vacinação', secao)
+    if not m:
+      continue
+    publico = f"{titulo} Público recomendado: {m.group(1).strip()[:1000]}"
+    if any(_item_vale_para_grupo(item, grupo) for item in m.group(1).split("•")[1:]):
+      extra = re.search(r'Sem histórico vacinal, administrar 3 doses.{0,250}?2 doses de dT;.{0,80}?gestação', secao)
+      #A dT da gestante está descrita na seção da dTpa, não na própria seção da dT
+      trechos.append((fonte, f"{publico} Gestante: {extra.group(0)}." if grupo == "gestante" and extra else publico))
+      continue
+    #Povos indígenas podem estar fora do bloco de público (ex.: pneumocócica a partir de 5 anos)
+    indigena = re.search(r'Povos indígenas a partir de \d+ anos[^(.]*', secao)
+    if grupo in FAIXAS_GRUPOS and grupo != "crianca" and indigena:
+      trechos.append((fonte, f"{publico} Indicação para este grupo somente em: {indigena.group(0).strip()}."))
+  return trechos
+
+def _nome_base_unidade(nome: str) -> str:
+  return re.sub(r'^(?:ubs|usf|centro de saude)\s+', '', _normalizar(nome)).strip()
+
+def _unidades_citadas(pergunta: str, unidades: list) -> list:
+  #Acha as unidades citadas na pergunta. Primeiro procura o nome de cada unidade no texto;
+  #depois tenta aproximado, porque o CNES grafa diferente do povo ("TOFOLI", "FIGUERINHA")
+  pergunta_norm = re.sub(r'\s+', ' ', _normalizar(pergunta))
+  if not re.search(r'\b(?:ubs|usf|posto|unidade|centro de saude)\b', pergunta_norm):
+    return []
+
+  bases = {_nome_base_unidade(u["nome"]): u for u in unidades}
+  citadas = [u for base, u in bases.items() if re.search(rf'\b{re.escape(base)}\b', pergunta_norm)]
+  if citadas:
+    return citadas
+
+  nome = _extrair_nome_ubs(pergunta)
+  if not nome:
+    return []
+  parecidas = difflib.get_close_matches(nome, list(bases), n=3, cutoff=0.8)
+  return [bases[b] for b in parecidas]
+
+def buscar(pergunta: str, k: int = 3, codigo_ibge: str = CODIGO_IBGE_PADRAO):
+    #Recebe uma pergunta em português, devolve os `k` trechos mais relevantes e a fonte de cada um
+    #Busca híbrida: unidade citada pelo nome -> consulta direta na tabela; idade específica -> bloco
+    #daquela idade no texto; senão, busca semântica nos chunks da fonte nacional e do município
 
     pergunta_limpa = pergunta.strip()
     termo_idade = _extrair_termo_idade(pergunta_limpa)
-    nome_ubs = _extrair_nome_ubs(pergunta_limpa)
 
-    #Caso a pergunta cite uma UBS específica pelo nome
-    if nome_ubs:
-        print(f"DEBUG: Nome de UBS detectado: '{nome_ubs}'")
-        dados_ubs = colecao.get(
-            where={"fonte": {"$eq": "ubs_marilia.txt"}},
-            include=["documents"],
-        )
-        if dados_ubs["documents"]:
-            texto_ubs = " ".join(dados_ubs["documents"])
-            #cada unidade começa com "UBS NOME EM MAIÚSCULAS" no texto original
-            blocos = re.split(r'(?=(?:UBS|USF) [A-ZÀ-Ÿ])', texto_ubs)
-            for bloco in blocos:
-                if nome_ubs in bloco.lower():
-                    meta = metadados_da_fonte("ubs_marilia.txt")
-                    return [{
-                        "fonte": "ubs_marilia.txt",
-                        "distancia": 0,
-                        "trecho": _limpar_saida(bloco),
-                        "titulo": meta["titulo"],
-                        "url": meta["url"],
-                    }]
-            print("DEBUG: Nenhuma UBS com esse nome encontrada; seguindo para outras buscas.")
+    with banco_dados.conectar() as conexao:
+        with conexao.cursor(row_factory=dict_row) as cursor:
+            unidades = cursor.execute(
+                "select * from unidades where codigo_ibge = %s", (codigo_ibge,)
+            ).fetchall()
+            fontes = cursor.execute(
+                "select id, nome, titulo, url, atualizado_em at time zone 'America/Sao_Paulo' as atualizado_em from fontes "
+                "where codigo_ibge is null or codigo_ibge = %s", (codigo_ibge,)
+            ).fetchall()
+            fonte_por_id = {f["id"]: f for f in fontes}
+            fonte_por_nome = {f["nome"]: f for f in fontes}
 
+            def _resultado(nome_fonte, trecho, distancia):
+                f = fonte_por_nome[nome_fonte]
+                return {"fonte": nome_fonte, "distancia": distancia, "trecho": trecho,
+                        "titulo": f["titulo"], "url": f["url"], "atualizado_em": f["atualizado_em"]}
 
-    #Caso a pergunta tenha uma idade específica
-    if termo_idade:
-        numero_idade, unidade = termo_idade
-        print(f"DEBUG: Idade detectada: {numero_idade} {unidade}")
+            #Caso a pergunta cite uma unidade específica pelo nome
+            citadas = _unidades_citadas(pergunta_limpa, unidades)
+            if citadas:
+                citadas = citadas[:k]
+                resultados = [_resultado(f"cnes_unidades_{codigo_ibge}", texto_da_unidade(u), 0) for u in citadas]
+                #Horário vem da Secretaria: fica em outro resultado pra citar a fonte certa
+                fonte_horario = f"prefeitura_horarios_{codigo_ibge}"
+                if fonte_horario in fonte_por_nome:
+                    resultados += [
+                        _resultado(fonte_horario, f"{u['nome']}: horário de atendimento {u['horario']}.", 0)
+                        for u in citadas if u["horario"]
+                    ]
+                return resultados
 
-        #Busca todos os chunks da coleção para filtrar localmente
-        dados = colecao.get(include=["documents", "metadatas"])
-        documentos = dados["documents"]
-        metadados = dados["metadatas"]
+            #Caso a pergunta tenha uma idade específica
+            if termo_idade:
+                linhas = cursor.execute(
+                    "select c.texto, f.nome from chunks c join fontes f on f.id = c.fonte_id "
+                    "where f.codigo_ibge is null order by f.id, c.chunk_index"
+                ).fetchall()
+                trechos = trechos_da_idade(*termo_idade, [(l["texto"], l["nome"]) for l in linhas])
+                if trechos:
+                    return [_resultado(fonte, _limpar_saida(trecho), 0) for fonte, trecho in trechos]
 
-        #Regex pra achar a idade exata (ex: "2 meses", não "12 meses")
-        padrao_idade = re.compile(
-            rf"\b{re.escape(numero_idade)}\s*{re.escape(unidade)}\b",
-            re.IGNORECASE
-        )
+            #Caso a pergunta peça a lista de vacinas de um grupo (idoso, gestante...)
+            grupo = _extrair_grupo(pergunta_limpa)
+            if grupo:
+                linhas = cursor.execute(
+                    "select c.texto, f.nome from chunks c join fontes f on f.id = c.fonte_id "
+                    "where f.codigo_ibge is null order by f.id, c.chunk_index"
+                ).fetchall()
+                trechos = trechos_do_grupo(grupo, [(l["texto"], l["nome"]) for l in linhas])
+                if trechos:
+                    return [_resultado(fonte, _limpar_saida(trecho), 0) for fonte, trecho in trechos]
 
-        encontrados_com_idade = []
-        for i, texto in enumerate(documentos):
-            if padrao_idade.search(texto):
-                encontrados_com_idade.append({
-                    "texto": texto,
-                    "fonte": metadados[i]["fonte"],
-                    "chunk_index": metadados[i]["chunk_index"],
-                })
-
-        if encontrados_com_idade:
-            print(f"DEBUG: Encontrados {len(encontrados_com_idade)} chunks com a idade.")
-            fonte_inicial = encontrados_com_idade[0]["fonte"]
-
-            #Coleta todos os chunks do documento fonte identificado
-            chunks_do_documento = []
-            for i, texto in enumerate(documentos):
-                if metadados[i]["fonte"] == fonte_inicial:
-                    chunks_do_documento.append({
-                        "texto": texto,
-                        "chunk_index": metadados[i]["chunk_index"],
-                    })
-
-            #Ordena os chunks na ordem original do documento
-            chunks_do_documento.sort(key=lambda x: x["chunk_index"])
-
-            #Junta todo o texto do documento pra uma busca mais abrangente
-            texto_completo_documento = " ".join(c["texto"] for c in chunks_do_documento)
-            print(f"DEBUG: Texto completo do documento fonte (primeiros 200 chars): {texto_completo_documento[:200]}...")
-
-            #Encontra o início do bloco de informações da idade procurada
-            termo_busca = f"{numero_idade} {unidade}"
-            indice_inicio = texto_completo_documento.lower().find(termo_busca)
-            print(f"DEBUG: Procurando por '{termo_busca}'. indice_inicio = {indice_inicio}")
-
-            if indice_inicio != -1:
-                #Busca pela próxima menção de idade pra delimitar o bloco relevante
-                proxima_idade_match = re.search(
-                    r"\d+\s*(?:meses?|mês|anos?)",
-                    texto_completo_documento[indice_inicio + len(termo_busca):]
-                )
-                indice_fim = len(texto_completo_documento)
-                if proxima_idade_match:
-                    indice_fim = indice_inicio + len(termo_busca) + proxima_idade_match.start()
-
-                bloco_relevante = texto_completo_documento[indice_inicio:indice_fim].strip()
-                print(f"DEBUG: Bloco relevante para {numero_idade} {unidade}: {bloco_relevante[:200]}...")
-
-                # FIX: antes, a frase da idade (ex.: "2 meses") era removida do
-                # início do bloco pra não confundir a extração de nomes de
-                # vacina que vinha a seguir. Como essa extração por regex foi
-                # removida (ver comentário abaixo) e o bloco inteiro passa a
-                # ir direto pro LLM, tirar a idade do texto só prejudicava:
-                # o LLM recebia a lista de vacinas SEM nenhuma pista de que
-                # era justamente sobre "2 meses", e por segurança (regra do
-                # prompt de não inventar) dizia que não conseguia relacionar
-                # as doses à faixa etária. Agora deixamos (e reforçamos) a
-                # idade explícita no início do trecho.
-                padrao_frase_idade = re.compile(rf"^{numero_idade}\s*{unidade}\s*", re.IGNORECASE)
-                bloco_sem_idade_duplicada = padrao_frase_idade.sub("", bloco_relevante, 1).strip()
-                bloco_relevante = f"Aos {numero_idade} {unidade} de idade: {bloco_sem_idade_duplicada}"
-
-                # FIX: antes, uma regex tentava recortar só os NOMES das vacinas
-                # (texto antes de "Xª dose"/"dose única") e descartava o resto.
-                # Só que no texto da tabela, depois de cada "Nª dose" vem a lista
-                # de doenças evitadas daquela vacina, e só DEPOIS vem o nome da
-                # próxima vacina — então a regex grudava "doenças da vacina
-                # anterior" + "nome da próxima vacina" num nome só (ex.:
-                # "influenzae b e hepatite B poliomielite inativada VIP"),
-                # produzindo uma lista de "vacinas" ilegível que confundia o LLM.
-                # Mais simples e mais robusto: manda o bloco_relevante inteiro
-                # (já é só o trecho da idade certa, limpo) pro LLM interpretar —
-                # ele é melhor nisso do que uma regex rígida.
-                if bloco_relevante:
-                    meta = metadados_da_fonte(fonte_inicial)
-                    return [{
-                        "fonte": fonte_inicial,
-                        "distancia": 0,
-                        "trecho": _limpar_saida(bloco_relevante),
-                        "titulo": meta["titulo"],
-                        "url": meta["url"],
-                    }]
-
-
-    #Busca sem idade específica (fallback para busca semântica)
-    #Cobre perguntas sobre UBS, endereços, telefones, gestantes sem idade em meses, etc.
-    embedding_pergunta = gerar_embeddings([pergunta_limpa])[0]
-
-    resultado_busca = colecao.query(
-        query_embeddings=[embedding_pergunta],
-        n_results=k,
-        include=['documents', 'metadatas', 'distances'],
-    )
-
-    resultados_finais = []
-    for texto, metadado, distancia in zip(
-        resultado_busca["documents"][0],
-        resultado_busca["metadatas"][0],
-        resultado_busca["distances"][0],
-    ):
-        resultados_finais.append({
-            "fonte": metadado["fonte"],
-            "distancia": round(distancia, 4),
-            "trecho": _limpar_saida(texto),
-            "titulo": metadado.get("titulo") or "",
-            "url": metadado.get("url") or "",
-        })
-    return resultados_finais
+            #Busca sem idade específica (fallback para busca semântica)
+            #Cobre perguntas sobre UBS, endereços, telefones, gestantes sem idade em meses, etc.
+            embedding_pergunta = str(gerar_embeddings([pergunta_limpa])[0])
+            linhas = cursor.execute(
+                """
+                select c.texto, c.fonte_id,
+                       c.embedding operator(extensions.<=>) %(vetor)s::extensions.vector as distancia
+                from chunks c
+                where c.fonte_id = any(%(fontes)s)
+                order by distancia
+                limit %(k)s
+                """,
+                {"vetor": embedding_pergunta, "fontes": list(fonte_por_id), "k": k},
+            ).fetchall()
+            return [
+                _resultado(fonte_por_id[l["fonte_id"]]["nome"], _limpar_saida(l["texto"]), round(l["distancia"], 4))
+                for l in linhas
+            ]
 
 
 # ============================================================
-# LISTA DE ARQUIVOS DE ORIGEM (usada por inicializar())
+# INICIALIZAÇÃO
 # ============================================================
 
-arquivos_pdf = [
-  "vacinacao_gestante.pdf",
-  "vacinacao_criancas.pdf",
-  "vacinacao_adolescentes.pdf",
-  "vacinacao_adultos.pdf",
-  "vacinacao_idosos.pdf",
-]
-arquivos_txt = [
-  "ubs_marilia.txt",
-]
-# OBS: o processamento desses arquivos (extração + chunking) só acontece
-# dentro de `inicializar()`, nunca aqui no nível do módulo — importar
-# `pipeline_dados` não deve ter efeito colateral nenhum (não processa
-# arquivo, não toca disco), só quando `inicializar()` é chamado
-# explicitamente. Isso evita reprocessar tudo sempre que o Streamlit
-# reimporta o módulo a cada rerun.
-
-
-# ============================================================
-# INICIALIZAÇÃO (equivalente à célula "## EXECUÇÃO" do notebook, mas
-# reutilizável e idempotente — pra não reconstruir o índice vetorial
-# toda vez que o Streamlit re-executa o script)
-# ============================================================
-
-_INICIALIZADO = False
-
-
-def inicializar(pasta_dados: str = ".", forcar_reconstrucao: bool = False):
-    """
-    Roda o pipeline completo: extração -> chunking -> embeddings -> índice
-    vetorial. Idempotente por padrão: se o índice Chroma em `PASTA_CHROMA`
-    já existir com dados, não reconstrói (fica rápido em reruns do
-    Streamlit) — passe `forcar_reconstrucao=True` pra reprocessar do zero
-    (ex.: depois de atualizar os PDFs/CSVs de origem).
-
-    `pasta_dados` é o diretório onde estão os PDFs e o `ubs_marilia.txt`
-    (por padrão, o diretório atual).
-    """
-    global _INICIALIZADO
-
-    import os as _os
-    diretorio_anterior = _os.getcwd()
-    if pasta_dados != ".":
-        _os.chdir(pasta_dados)
-
-    try:
-        if not forcar_reconstrucao:
-            try:
-                cliente = chromadb.PersistentClient(path=PASTA_CHROMA)
-                colecao_existente = cliente.get_collection(NOME_COLECAO)
-                if colecao_existente.count() > 0:
-                    carregar_modelo_embeddings()  # garante que o modelo de embeddings está carregado pra busca
-                    _INICIALIZADO = True
-                    return
-            except Exception:
-                pass  # índice ainda não existe — segue pra construir
-
-        documentos_processados = {}
-
-        for arquivo in arquivos_pdf:
-            if _os.path.exists(arquivo):
-                documentos_processados[arquivo] = extrair_e_limpar_pdf(arquivo)
-            else:
-                print(f"Atenção: Arquivo {arquivo} não encontrado em {pasta_dados!r}.")
-
-        for arquivo in arquivos_txt:
-            if _os.path.exists(arquivo):
-                documentos_processados[arquivo] = extrair_e_limpar_txt(arquivo)
-            else:
-                print(f"Atenção: Arquivo {arquivo} não encontrado em {pasta_dados!r}.")
-
-        chunks = chunkar_documentos(documentos_processados)
-        montar_banco_vetorial(chunks)
-        carregar_modelo_embeddings()
-        _INICIALIZADO = True
-    finally:
-        _os.chdir(diretorio_anterior)
+def inicializar():
+    #Carrega o modelo de embeddings (1x por processo) e confere se o banco já tem dados
+    with banco_dados.conectar() as conexao:
+        total = conexao.execute("select count(*) from chunks").fetchone()[0]
+    if total == 0:
+        raise RuntimeError("Banco sem dados: rode python atualizar_dados.py")
+    carregar_modelo_embeddings()

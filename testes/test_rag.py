@@ -1,7 +1,7 @@
 """
 Testes automatizados do nucleo RAG (rag.py) — Dupla 2.
 
-Usa um `buscar()` simulado (mock), sem precisar do Chroma/embeddings
+Usa um `buscar()` simulado (mock), sem precisar do banco/embeddings
 nem de chave de API real, pra validar a logica de guardrails,
 contexto suficiente/insuficiente e tratamento de erros.
 
@@ -21,7 +21,7 @@ import rag
 
 
 def _buscar_mock(pergunta, k=3):
-    """Simula o `buscar()` da Dupla 1 sem precisar do Chroma/embeddings."""
+    """Simula o `buscar()` da Dupla 1 sem precisar do banco/embeddings."""
     mapa = {
         "2 meses": [{
             "fonte": "vacinacao_criancas.pdf",
@@ -43,7 +43,7 @@ def _buscar_mock(pergunta, k=3):
 
 
 def _buscar_que_falha(pergunta, k=3):
-    raise RuntimeError("Chroma indisponível (simulação de falha)")
+    raise RuntimeError("Banco indisponível (simulação de falha)")
 
 
 def _chamar_llm_arriscado(prompt: str) -> str:
