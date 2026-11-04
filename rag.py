@@ -42,8 +42,8 @@ from typing import Callable, Optional
 # Limiar de distância de cosseno (pgvector) acima do qual consideramos que
 # não há evidência suficiente na base para responder.
 # Calibrado com testes/calibrar_limiar.py sobre a Instrução Normativa 2026:
-# perguntas que a base cobre ficam com distância <= 0.388; as que ela não cobre
-# (agendamento, prazo, horário) a partir de 0.435. 0.41 fica nesse vão. Pergunta
+# perguntas que a base cobre ficam com distância <= 0.389; as que ela não cobre
+# (agendamento, prazo, horário) a partir de 0.436. 0.41 fica nesse vão. Pergunta
 # clínica com distância baixa é barrada antes pelo guardrail_pre.
 # Recalibre ao adicionar fontes.
 LIMIAR_DISTANCIA_SUFICIENTE = 0.41
@@ -60,7 +60,9 @@ Regras obrigatórias:
 4. NUNCA forneça diagnóstico médico, prescrição, recomendação de tratamento ou
    qualquer orientação clínica, mesmo que a pergunta pareça pedir isso. Nesses
    casos, oriente a pessoa a procurar a UBS/profissional de saúde.
-5. Seja direto e objetivo. Não repita o contexto literalmente — responda à
+5. Se um trecho limitar o público da vacina (ex.: "em casos excepcionais",
+   "trabalhador de saúde", "acamado"), mantenha essa condição na resposta.
+6. Seja direto e objetivo. Não repita o contexto literalmente — responda à
    pergunta em linguagem natural. Não cite fontes nem trechos: o sistema
    acrescenta a fonte oficial automaticamente ao final.
 """
@@ -293,8 +295,8 @@ def _descrever_fontes(resultados_busca: list) -> str:
 MENSAGEM_SEM_EVIDENCIA = (
     "Não encontrei informação suficiente na base de dados oficial para "
     "responder a essa pergunta com segurança. Para confirmar, procure a "
-    "UBS/Posto de Saúde mais próximo ou ligue para o Disque Saúde 136 "
-    "(gratuito)."
+    "UBS/Posto de Saúde mais próximo, ligue para a Secretaria Municipal da "
+    "Saúde de Marília, (14) 3402-6500, ou para o Disque Saúde 136 (gratuito)."
 )
 
 MENSAGEM_ERRO_GERACAO = (

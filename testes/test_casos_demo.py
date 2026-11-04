@@ -61,10 +61,41 @@ def test_2_meses_traz_todas_as_vacinas_da_idade(buscar):
         assert vacina in contexto
 
 
-def test_idoso_traz_a_lista_do_grupo_e_nao_trecho_generico(buscar):
-    resultados = buscar("Quais vacinas um idoso deve tomar?")
-    assert len(resultados) >= 2
-    assert all("idos" in x["trecho"].lower() for x in resultados)
+# Gabarito: os calendários oficiais de 2026 por grupo (ainda no histórico do git)
+@pytest.mark.parametrize("pergunta,vacinas", [
+    ("Quais vacinas um idoso deve tomar?",
+     ("hepatite b", "dupla adulto", "febre amarela", "tríplice viral", "pneumocócica", "influenza", "varicela", "covid")),
+    ("Quais vacinas tomar aos 70 anos?",
+     ("hepatite b", "dupla adulto", "influenza", "covid")),
+])
+def test_lista_do_grupo_bate_com_o_calendario_oficial(buscar, pergunta, vacinas):
+    contexto = " ".join(x["trecho"] for x in buscar(pergunta)).lower()
+    for vacina in vacinas:
+        assert vacina in contexto, vacina
+
+
+def test_gestante_nao_recebe_vacina_de_faixa_etaria(buscar):
+    contexto = " ".join(x["trecho"] for x in buscar("Quais vacinas a gestante deve tomar?")).lower()
+    for vacina in ("dtpa", "sincicial", "hepatite b", "influenza", "covid"):
+        assert vacina in contexto, vacina
+    assert "tríplice viral" not in contexto  # contraindicada na gravidez
+
+
+def test_ubs_traz_horario_da_secretaria(buscar):
+    resultados = buscar("Qual o horário da UBS Alto Cafezal?")
+    assert {x["fonte"] for x in resultados} == {FONTE_UNIDADES, "prefeitura_horarios_352900"}
+    assert any("07h" in x["trecho"] for x in resultados)
+
+
+def test_documento_para_vacinar_vem_do_ministerio(buscar):
+    r = _responder("Preciso levar algum documento pra tomar vacina?", buscar)
+    assert r.status == "respondida"
+    assert set(r.fontes) & {"gov_vacina_na_aps", "gov_faq_como_se_vacinar"}
+
+
+def test_unidade_sem_email_generico(buscar):
+    with banco_dados.conectar() as conexao:
+        assert conexao.execute("select count(*) from unidades where email like 'smhs@%'").fetchone()[0] == 0
 
 
 def test_ubs_alto_cafezal_traz_endereco_real(buscar):
@@ -85,14 +116,6 @@ def test_domingo_sem_evidencia_orienta_proximo_passo(buscar):
     r = _responder("A UBS funciona aos domingos?", buscar)
     assert r.status == "sem_evidencia"
     assert "136" in r.resposta
-
-
-def test_documento_para_vacina_nao_vem_do_banco_fixo(buscar):
-    # Antes caía na resposta de "agendamento" do CSV. Agora vai pro RAG;
-    # a base não tem lista de documentos, então só exigimos que não seja
-    # bloqueada nem quebre (o prompt manda o LLM dizer que não encontrou).
-    r = _responder("Preciso levar algum documento pra tomar vacina?", buscar)
-    assert r.status in ("respondida", "sem_evidencia")
 
 
 @pytest.mark.parametrize("pergunta", [

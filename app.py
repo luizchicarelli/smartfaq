@@ -254,7 +254,7 @@ def carregar_unidades():
     try:
         return _consultar(
             "select nome as \"Unidade\", endereco as \"Endereço\", bairro as \"Bairro\", "
-            "telefone as \"Telefone\", email as \"E-mail\", turno as \"Atendimento\" "
+            "telefone as \"Telefone\", email as \"E-mail\", horario as \"Horário\", turno as \"Atendimento\" "
             "from unidades where codigo_ibge = '352900' order by nome"
         )
     except Exception:
@@ -576,7 +576,7 @@ if enviar and pergunta_usuario.strip():
 
                 st.dataframe(
                     unidades_filtradas,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
 
@@ -632,7 +632,7 @@ with st.expander(
                 "dentro_escopo",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 

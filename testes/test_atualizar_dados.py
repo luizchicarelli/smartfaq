@@ -94,6 +94,37 @@ def test_gravar_unidades_atualiza_e_remove_quem_saiu(conexao):
     assert linhas == [(991, "A2")]
 
 
+def test_horarios_da_pagina():
+    texto = ('UBS ALTO CAFEZAL “Dr. Francisco” Rua Paes Lemes nº 850 Fone: (14) 3454-9168 /3454-5831 E-mail: [email protected] '
+             'Horário de Atendimento: das 07h às 17h   USF JK I e II Rua Y, 5 Fone: (14) 3415-2116 '
+             'Horário de Atendimento: das 07h às 16h')
+    unidades = job.horarios_da_pagina(texto)
+    assert [u["nome"] for u in unidades] == ["UBS ALTO CAFEZAL", "USF JK I e II"]
+    assert unidades[0]["telefones"] == {"34549168", "34545831"}
+    assert unidades[0]["horario"] == "das 07h às 17h"
+
+
+def test_horarios_com_i_e_ii_depois_do_homenageado():
+    texto = ('USF COSTA E SILVA “Dr. Gustavo” - (I e II) Rua F nº 300 Fones: (14) 3451-5233 Horário de Atendimento: das 07h às 17h '
+             'USF SEM HORARIO “Dr. X” Rua Y, 94 Fone: (14) 3454-1976 E-mail: [email protected] ')
+    unidades = job.horarios_da_pagina(texto)
+    assert [u["nome"] for u in unidades] == ["USF COSTA E SILVA I e II"]  # sem horário publicado, fica de fora
+
+
+def test_casar_horarios_por_telefone_e_por_nome():
+    unidades = [
+        {"codigo_cnes": 1, "nome": "USF PRIMEIRO DE MAIO", "telefone": "14-34340381"},  # só o telefone bate
+        {"codigo_cnes": 2, "nome": "USF JK", "telefone": ""},
+        {"codigo_cnes": 3, "nome": "USF JK II", "telefone": ""},
+        {"codigo_cnes": 4, "nome": "USF SEM PAR", "telefone": ""},
+    ]
+    pagina = [
+        {"nome": "USF 1º DE MAIO", "telefones": {"34340381"}, "horario": "A"},
+        {"nome": "USF JK I e II", "telefones": set(), "horario": "B"},
+    ]
+    assert job.casar_horarios(unidades, pagina) == {1: "A", 2: "B", 3: "B"}
+
+
 def test_pdf_sem_texto_e_recusado():
     # É assim que estão os calendários atuais do gov.br: viraria índice vazio
     escritor = PdfWriter()

@@ -98,15 +98,33 @@ def test_trechos_da_idade_acha_a_idade_no_meio_da_lista():
     assert len(trechos) == 1 and "[Vacina A]" in trechos[0][1]
 
 
-def test_trechos_do_grupo():
+def _secao(titulo, publico):
+    return (f"[{titulo}] Indicação x. Idade para vacinação e/ou grupo recomendado {publico} Esquema de vacinação y", "f")
+
+
+def test_trechos_do_grupo_usa_o_publico_de_cada_vacina():
     chunks = [
-        ("[Vacina A] Idade para vacinação e/ou grupo recomendado • Criança • Idoso em instituição Esquema de vacinação x", "f"),
-        ("[Vacina B] Idade para vacinação e/ou grupo recomendado • Criança Esquema de vacinação idoso aqui não conta", "f"),
+        _secao("Vacina Idoso", "• Criança • Idoso a partir de 60 anos"),
+        _secao("Vacina Todos", "• Toda a população, a partir do nascimento."),
+        _secao("Vacina Faixa Aberta", "• População a partir de 7 anos de idade."),
+        _secao("Vacina Ate 59", "• População a partir de 9 meses até 59 anos, 11 meses e 29 dias de idade."),
+        _secao("Vacina Criança", "• Criança a partir de 2 meses, até 4 anos."),
+        _secao("Vacina Trabalhador", "• População a partir dos 12 meses até 59 anos; • Trabalhador de saúde, qualquer faixa etária."),
     ]
+    titulos = lambda g: {t[1][1:t[1].index("]")] for t in pd.trechos_do_grupo(g, chunks)}
+    assert titulos("idoso") == {"Vacina Idoso", "Vacina Todos", "Vacina Faixa Aberta", "Vacina Trabalhador"}
+    assert titulos("adulto") == {"Vacina Todos", "Vacina Faixa Aberta", "Vacina Ate 59", "Vacina Trabalhador"}
+    # Na gravidez, "população de X a Y anos" NÃO vale: pode ser vacina contraindicada
+    assert titulos("gestante") == {"Vacina Todos"}
+
+
+def test_extrair_grupo():
     assert pd._extrair_grupo("Quais vacinas um idoso deve tomar?") == "idoso"
+    assert pd._extrair_grupo("vacinas para idosos") == "idoso"
+    assert pd._extrair_grupo("Quais vacinas tomar com 65 anos?") == "idoso"
+    assert pd._extrair_grupo("Quais vacinas tomar aos 30 anos?") == "adulto"
+    # Pergunta sobre uma vacina específica não é pedido de lista
     assert pd._extrair_grupo("O idoso precisa tomar vacina da gripe?") is None
-    trechos = pd.trechos_do_grupo("idoso", chunks)
-    assert len(trechos) == 1 and "[Vacina A]" in trechos[0][1]
 
 
 def test_texto_da_unidade_omite_campo_vazio():

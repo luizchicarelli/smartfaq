@@ -19,9 +19,8 @@ import unicodedata
 from psycopg.rows import dict_row
 
 import banco_dados
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
-from langchain_community.document_loaders import PyPDFLoader
+from fastembed import TextEmbedding
+from pypdf import PdfReader
 
 
 # ============================================================
@@ -30,11 +29,9 @@ from langchain_community.document_loaders import PyPDFLoader
 
 def extrair_e_limpar_pdf(caminho_arquivo):
   #Extrai e limpa o texto de um arquivo PDF
-  loader = PyPDFLoader(caminho_arquivo)
-  paginas = loader.load()
   texto_completo = ""
-  for pagina in paginas:
-    texto = pagina.page_content
+  for pagina in PdfReader(caminho_arquivo).pages:
+    texto = pagina.extract_text() or ""
     #Substitui ligaturas comuns, como 'ﬂ' (U+FB02) por 'fl'
     texto = texto.replace('ﬂ', 'fl')
     # FIX (causa raiz real): a regex antiga usava "meses?"/"anos?" (o "s" como
@@ -83,20 +80,16 @@ def secoes_por_vacina(texto: str) -> list:
     secoes.append((titulo, secao))
   return secoes
 
-def chunkar_documentos(documentos_processados: dict, tamanho_chunk=2000, sobreposicao_chunk=0):
+def chunkar_documentos(documentos_processados: dict, tamanho_chunk=2000):
   #Recebe {nome_da_fonte: texto_limpo} e devolve uma lista de chunks, cada um com texto, fonte e posição
-
-  splitter = RecursiveCharacterTextSplitter(
-    chunk_size=tamanho_chunk,
-    chunk_overlap=sobreposicao_chunk,
-    separators=["\n\n", ""],  #simplificado para priorizar o tamanho do chunk
-)
-
   chunks = []
   for nome, texto in documentos_processados.items():
     i = 0
     for titulo, corpo in secoes_por_vacina(texto):
-      for pedaco in splitter.split_text(corpo):
+      for inicio in range(0, len(corpo), tamanho_chunk):
+        pedaco = corpo[inicio:inicio + tamanho_chunk].strip()
+        if not pedaco:
+          continue
         #Repete o nome da vacina em cada chunk: sem isso, um pedaço do meio da seção não diz de qual vacina fala
         chunks.append({"texto": f"[{titulo}] {pedaco}" if titulo else pedaco, "fonte": nome, "chunk_index": i})
         i += 1
@@ -110,19 +103,21 @@ def chunkar_documentos(documentos_processados: dict, tamanho_chunk=2000, sobrepo
 # ============================================================
 
 #Modelo multilíngue leve e com bom desempenho em português
-MODELO_EMBEDDINGS = "paraphrase-multilingual-MiniLM-L12-v2"
+# fastembed roda o mesmo modelo sem PyTorch (vetores idênticos, cerca de metade da
+# memória), o que cabe na hospedagem gratuita. Trocar de modelo exige `atualizar_dados.py --forcar`
+MODELO_EMBEDDINGS = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 _modelo = None
 
 def carregar_modelo_embeddings():
   global _modelo
   if _modelo is None:
     print(f"[embeddings] Carregando modelo '{MODELO_EMBEDDINGS}'...")
-    _modelo = SentenceTransformer(MODELO_EMBEDDINGS)
+    _modelo = TextEmbedding(MODELO_EMBEDDINGS)
   return _modelo
 
 def gerar_embeddings(textos: list):
   modelo = carregar_modelo_embeddings()
-  return modelo.encode(textos, show_progress_bar=True).tolist()
+  return [v.tolist() for v in modelo.embed(textos)]
 
 
 # Município usado enquanto o app atende só Marília
@@ -165,29 +160,6 @@ def trechos_da_idade(numero: str, unidade: str, chunks: list) -> list:
       trechos.append((fonte, f"{titulo} ...{texto[max(0, m.start() - 150):m.end() + 200]}..."))
   return trechos
 
-GRUPOS_VACINACAO = {"idoso": "idos", "gestante": "gestante", "adolescente": "adolescente", "adulto": "adulto"}
-
-def _extrair_grupo(pergunta: str):
-  #"Quais vacinas um idoso deve tomar?": pede a lista do grupo, não uma vacina específica
-  norm = _normalizar(pergunta)
-  if not re.search(r'\bquais\b.*\bvacinas?\b', norm):
-    return None
-  for grupo in GRUPOS_VACINACAO:
-    if re.search(rf'\b{grupo}s?\b', norm):
-      return grupo
-  return None
-
-def trechos_do_grupo(grupo: str, chunks: list) -> list:
-  #A IN abre cada vacina com "Idade para vacinação e/ou grupo recomendado". Traz toda vacina que cita o grupo ali
-  raiz = GRUPOS_VACINACAO[grupo]
-  trechos = []
-  for texto, fonte in chunks:
-    m = re.search(r'Idade para vacinação e/ou grupo recomendado(.{0,600}?)(?:Esquema de vacinação|Dose\b|$)', texto)
-    if m and raiz in m.group(1).lower():
-      titulo = texto[:texto.index("]") + 1] if texto.startswith("[") else ""
-      trechos.append((fonte, f"{titulo} {m.group(0).strip()}"))
-  return trechos
-
 def _normalizar(texto: str) -> str:
   #Minúsculas, sem acento e sem aspas — pra comparar nomes de UBS de forma tolerante
   texto = unicodedata.normalize("NFKD", texto.lower())
@@ -214,6 +186,61 @@ def texto_da_unidade(unidade: dict, municipio: str = "") -> str:
     f"Município: {municipio}" if municipio else "",
   ]
   return ". ".join(p for p in partes if p) + "."
+
+# Faixa etária de cada grupo, em anos. Gestante não tem faixa de propósito: vacina
+# "para a população de X a Y anos" pode ser contraindicada na gravidez (ex.: tríplice viral)
+FAIXAS_GRUPOS = {"idoso": (60, 130), "adulto": (25, 59), "adolescente": (10, 24)}
+PADROES_GRUPOS = {"idoso": r'\bidos|superior a 60', "adulto": r'\badult', "adolescente": r'\badolescente', "gestante": r'\bgestante'}
+
+def _extrair_grupo(pergunta: str):
+  #"Quais vacinas um idoso deve tomar?" / "vacinas aos 65 anos": pede a lista do grupo, não uma vacina específica
+  norm = _normalizar(pergunta)
+  if not re.search(r'\bvacinas\b|\bquais\b.*\bvacinas?\b', norm):
+    return None
+  for grupo in PADROES_GRUPOS:
+    if re.search(rf'\b{grupo}s?\b', norm):
+      return grupo
+  m = re.search(r'(\d+)\s*anos?\b', norm)
+  if m:
+    for grupo, (inicio, fim) in FAIXAS_GRUPOS.items():
+      if inicio <= int(m.group(1)) <= fim:
+        return grupo
+  return None
+
+def _item_vale_para_grupo(item: str, grupo: str) -> bool:
+  #Um item do público de uma vacina (ex.: "População a partir de 7 anos de idade") vale para o grupo?
+  item = _normalizar(item)
+  if "toda a populacao" in item or re.search(PADROES_GRUPOS[grupo], item):
+    return True
+  if grupo not in FAIXAS_GRUPOS:
+    return False
+  #Trabalhador de saúde e povos indígenas têm indicação sem limite de idade; a condição vai junto no trecho
+  if re.search(r'qualquer faixa etaria|trabalhador|povos indigenas', item):
+    return True
+  m = re.search(r'populacao (?:em geral: )?(?:a partir d[eo]s? |com idade entre )(\d+) (mes\w*|anos?)', item)
+  if not m:
+    return False
+  inicio = int(m.group(1)) / (1 if m.group(2).startswith("ano") else 12)
+  fim_m = re.search(r'(?:ate|\be)\s+(?:os\s+)?(\d+) anos', item[m.end():])
+  fim = int(fim_m.group(1)) if fim_m else 130
+  faixa_inicio, faixa_fim = FAIXAS_GRUPOS[grupo]
+  return inicio <= faixa_fim and fim >= faixa_inicio
+
+def trechos_do_grupo(grupo: str, chunks: list) -> list:
+  #A IN abre cada vacina com o público recomendado. Traz toda vacina em que algum item do público vale para o
+  #grupo, com o bloco inteiro: a condição ("em casos excepcionais", "trabalhador de saúde") precisa chegar ao LLM
+  secoes = {}
+  for texto, fonte in chunks:
+    if texto.startswith("["):
+      titulo = texto[:texto.index("] ") + 1]
+      secoes.setdefault((titulo, fonte), []).append(texto[len(titulo):])
+
+  trechos = []
+  for (titulo, fonte), partes in secoes.items():
+    m = re.search(r'Idade para vacinação(?: e/ou |/)grupo recomendado(.*?)Esquema de vacinação', " ".join(partes))
+    if m and any(_item_vale_para_grupo(item, grupo) for item in m.group(1).split("•")[1:]):
+      trechos.append((fonte, f"{titulo} Público recomendado: {m.group(1).strip()[:1000]}"))
+  return trechos
 
 def _nome_base_unidade(nome: str) -> str:
   return re.sub(r'^(?:ubs|usf|centro de saude)\s+', '', _normalizar(nome)).strip()
@@ -264,8 +291,16 @@ def buscar(pergunta: str, k: int = 3, codigo_ibge: str = CODIGO_IBGE_PADRAO):
             #Caso a pergunta cite uma unidade específica pelo nome
             citadas = _unidades_citadas(pergunta_limpa, unidades)
             if citadas:
-                nome_fonte = f"cnes_unidades_{codigo_ibge}"
-                return [_resultado(nome_fonte, texto_da_unidade(u), 0) for u in citadas[:k]]
+                citadas = citadas[:k]
+                resultados = [_resultado(f"cnes_unidades_{codigo_ibge}", texto_da_unidade(u), 0) for u in citadas]
+                #Horário vem da Secretaria: fica em outro resultado pra citar a fonte certa
+                fonte_horario = f"prefeitura_horarios_{codigo_ibge}"
+                if fonte_horario in fonte_por_nome:
+                    resultados += [
+                        _resultado(fonte_horario, f"{u['nome']}: horário de atendimento {u['horario']}.", 0)
+                        for u in citadas if u["horario"]
+                    ]
+                return resultados
 
             #Caso a pergunta tenha uma idade específica
             if termo_idade:

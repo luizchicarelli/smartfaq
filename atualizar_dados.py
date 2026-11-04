@@ -9,7 +9,10 @@ Rode a partir da RAIZ do projeto:
     python atualizar_dados.py
     python atualizar_dados.py --forcar   # reindexa mesmo sem mudança (ex.: mudou o chunking)
 """
+import collections
+import difflib
 import hashlib
+import html
 import json
 import os
 import re
@@ -27,6 +30,25 @@ MUNICIPIOS = {"352900": "Marília"}
 URL_CNES = "https://apidadosabertos.saude.gov.br/cnes/estabelecimentos"
 TIPOS_UNIDADE = (1, 2)  # 1 = Posto de Saúde, 2 = Centro de Saúde/Unidade Básica
 TAMANHO_PAGINA_CNES = 20
+
+# Página oficial com os horários; o CNES só informa o turno. robots.txt sem
+# restrição em 03/11/2026. Uma coleta por execução, sem pedir nada além destas.
+PAGINAS_HORARIOS = {
+    "352900": [
+        "https://saude.marilia.sp.gov.br/-unidades-basicas-de-saude/",
+        "https://saude.marilia.sp.gov.br/-unidades-de-saude-da-familia/",
+    ],
+}
+MINIMO_HORARIOS = 20  # menos que isso: a página mudou de layout
+
+# Páginas do Ministério sobre o que é preciso para se vacinar
+PAGINAS_NACIONAIS = {
+    "gov_vacina_na_aps": ("Vacina na Atenção Primária à Saúde",
+                          "https://www.gov.br/saude/pt-br/composicao/saps/vacina-na-aps"),
+    "gov_faq_como_se_vacinar": ("O que é preciso ser feito para me vacinar?",
+                                "https://www.gov.br/saude/pt-br/vacinacao/faq/vacinas/o-que-e-preciso-ser"),
+}
+MINIMO_CARACTERES_PAGINA = 200
 
 URL_PUBLICACOES = "https://www.gov.br/saude/pt-br/vacinacao/publicacoes"
 PADRAO_IN = r"instrucao-normativa-que-instrui-o-calendario-nacional-de-vacinacao-(\d{4})\.pdf"
@@ -68,6 +90,12 @@ def unidades_do_cnes(codigo_ibge: str) -> list:
                 break
             deslocamento += TAMANHO_PAGINA_CNES
 
+    # E-mail repetido em várias unidades ou com domínio inválido é cadastro genérico: melhor não informar
+    repeticoes = collections.Counter(r["endereco_email_estabelecimento"] for r in registros)
+
+    def email_valido(email):
+        return bool(email) and repeticoes[email] < 3 and re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-z]{2,}(?:\.[a-z]{2})?", email)
+
     unidades = []
     for r in registros:
         if r["estabelecimento_faz_atendimento_ambulatorial_sus"] != "SIM":
@@ -80,11 +108,66 @@ def unidades_do_cnes(codigo_ibge: str) -> list:
             "endereco": endereco.strip(),
             "bairro": r["bairro_estabelecimento"] or "",
             "telefone": r["numero_telefone_estabelecimento"] or "",
-            "email": r["endereco_email_estabelecimento"] or "",
+            "email": r["endereco_email_estabelecimento"] if email_valido(r["endereco_email_estabelecimento"]) else "",
             "turno": r["descricao_turno_atendimento"] or "",
             "data_atualizacao": r["data_atualizacao"],
         })
     return sorted(unidades, key=lambda u: u["codigo_cnes"])
+
+
+def _texto_html(corpo: str) -> str:
+    texto = re.sub(r"<(script|style)\b.*?</\1>|<[^>]+>", " ", corpo, flags=re.S | re.I)
+    return re.sub(r"\s+", " ", html.unescape(texto)).strip()
+
+
+def horarios_da_pagina(texto: str) -> list:
+    """Cada unidade da página: nome, telefones (8 dígitos) e horário de atendimento."""
+    unidades = []
+    for bloco in re.split(r"(?=\b(?:UBS|USF) [A-ZÀ-Ÿ0-9])", texto):
+        horario = re.search(r"Hor[áa]rio de Atendimento:\s*(das\s+[\d:h]+\s+às\s+[\d:h]+)", bloco, re.I)
+        # Cada palavra do nome termina em espaço/aspas, para não comer o "R" de "Rua" nem o "A" de "Av."
+        nome = re.match(r"(?:UBS|USF)(?: (?:[A-ZÀ-Ÿ0-9º.()]+|e)(?=[\s“\"]|$))+", bloco)
+        if horario and nome:
+            telefones = {re.sub(r"\D", "", t) for t in re.findall(r"\b\d{4}-?\d{4}\b", bloco[:horario.start()])}
+            # "USF J.K. “D. Maria” (I e II)": o "I e II" vem depois do homenageado, antes do telefone
+            cabecalho = re.split(r"Fones?:", bloco)[0]
+            sufixo = " I e II" if re.search(r"\bI e II\b", cabecalho) and "I e II" not in nome.group(0) else ""
+            unidades.append({"nome": nome.group(0).strip() + sufixo, "telefones": telefones, "horario": horario.group(1).strip()})
+    return unidades
+
+
+def _nomes_possiveis(nome: str) -> list:
+    # A Secretaria junta "USF JK I e II" em uma linha só; o CNES tem "USF JK" e "USF JK II"
+    base = pipeline_dados._normalizar(nome)
+    base = re.sub(r"^(?:ubs|usf)\s+", "", base).strip()
+    junto = re.fullmatch(r"(.+?) i e ii", base)
+    return [junto.group(1), f"{junto.group(1)} ii"] if junto else [base]
+
+
+def casar_horarios(unidades: list, pagina: list) -> dict:
+    """{codigo_cnes: horario}. Casa pelo telefone, que é exato; o que sobrar, por nome parecido."""
+    por_telefone = {re.sub(r"\D", "", u["telefone"])[-8:]: u for u in unidades if u["telefone"]}
+    por_nome = {pipeline_dados._nome_base_unidade(u["nome"]): u for u in unidades}
+    casados = {}
+    for item in pagina:
+        achou = [por_telefone[t] for t in item["telefones"] if t in por_telefone]
+        for nome in _nomes_possiveis(item["nome"]):
+            parecido = difflib.get_close_matches(nome, list(por_nome), n=1, cutoff=0.8)
+            if parecido:
+                achou.append(por_nome[parecido[0]])
+        for unidade in achou:
+            casados[unidade["codigo_cnes"]] = item["horario"]
+    return casados
+
+
+def texto_de_pagina(corpo: str) -> str:
+    # gov.br: o conteúdo fica entre id="content" e o rodapé
+    inicio = corpo.find('id="content"')
+    fim = corpo.find('id="footer"', inicio)
+    texto = _texto_html(corpo[inicio:fim] if inicio != -1 and fim != -1 else corpo)
+    if len(texto) < MINIMO_CARACTERES_PAGINA:
+        raise ValueError(f"Página com só {len(texto)} caracteres: layout mudou")
+    return texto
 
 
 def url_instrucao_normativa() -> str:
@@ -217,13 +300,72 @@ def atualizar_unidades(conexao, codigo_ibge: str, municipio: str) -> str:
     )
 
 
+def atualizar_pagina_nacional(conexao, nome: str, titulo: str, url: str) -> str:
+    texto = texto_de_pagina(baixar(url).decode("utf-8", "replace"))
+    fonte = {"nome": nome, "titulo": titulo, "url": url, "orgao": "Ministério da Saúde", "codigo_ibge": None}
+    return sincronizar_fonte(
+        conexao, fonte, _sha256(texto.encode("utf-8")),
+        lambda: [c["texto"] for c in pipeline_dados.chunkar_documentos({nome: texto})],
+    )
+
+
+def atualizar_horarios(conexao, codigo_ibge: str, municipio: str) -> str:
+    pagina = []
+    for url in PAGINAS_HORARIOS[codigo_ibge]:
+        pagina += horarios_da_pagina(_texto_html(baixar(url).decode("utf-8", "replace")))
+    if len(pagina) < MINIMO_HORARIOS:
+        raise ValueError(f"Só {len(pagina)} horários na página da Secretaria: layout mudou")
+
+    colunas = ("codigo_cnes", "nome", "telefone")
+    unidades = [dict(zip(colunas, l)) for l in conexao.execute(
+        "select codigo_cnes, nome, telefone from unidades where codigo_ibge = %s", (codigo_ibge,)
+    ).fetchall()]
+    casados = casar_horarios(unidades, pagina)
+    nomes = {u["codigo_cnes"]: u["nome"] for u in unidades}
+    fonte = {
+        "nome": f"prefeitura_horarios_{codigo_ibge}",
+        "titulo": f"Secretaria Municipal da Saúde de {municipio}: horários das unidades",
+        "url": PAGINAS_HORARIOS[codigo_ibge][0],
+        "orgao": f"Secretaria Municipal da Saúde de {municipio}",
+        "codigo_ibge": codigo_ibge,
+    }
+
+    def gravar_horarios(c):
+        c.execute("update unidades set horario = '' where codigo_ibge = %s", (codigo_ibge,))
+        with c.cursor() as cursor:
+            cursor.executemany(
+                "update unidades set horario = %s where codigo_cnes = %s",
+                [(h, cnes) for cnes, h in casados.items()],
+            )
+
+    # Quem pergunta sem citar a unidade também precisa de resposta
+    horario_comum, quantas = collections.Counter(casados.values()).most_common(1)[0]
+    resumo = (f"Horário de funcionamento das UBS e USF de {municipio}: {quantas} de {len(unidades)} unidades "
+              f"atendem {horario_comum}. A página da Secretaria não informa os dias da semana nem feriados.")
+
+    hash_conteudo = _sha256(json.dumps(sorted(casados.items()), ensure_ascii=False).encode("utf-8"))
+    print(f"[ingestao] horários: {len(casados)} de {len(unidades)} unidades")
+    return sincronizar_fonte(
+        conexao, fonte, hash_conteudo,
+        lambda: [resumo] + [f"{nomes[c]}: horário de atendimento {h}. Município: {municipio}." for c, h in casados.items()],
+        gravar_horarios,
+    )
+
+
 def main() -> int:
     tarefas = [("instrucao_normativa_vacinacao", atualizar_vacinacao)]
+    for nome, (titulo, url) in PAGINAS_NACIONAIS.items():
+        tarefas.append((nome, lambda c, n=nome, t=titulo, u=url: atualizar_pagina_nacional(c, n, t, u)))
     for codigo_ibge, municipio in MUNICIPIOS.items():
         tarefas.append((
             f"cnes_unidades_{codigo_ibge}",
             lambda c, i=codigo_ibge, m=municipio: atualizar_unidades(c, i, m),
         ))
+        if codigo_ibge in PAGINAS_HORARIOS:  # depois do CNES: casa com as unidades já gravadas
+            tarefas.append((
+                f"prefeitura_horarios_{codigo_ibge}",
+                lambda c, i=codigo_ibge, m=municipio: atualizar_horarios(c, i, m),
+            ))
 
     falhas = 0
     with banco_dados.conectar() as conexao:
