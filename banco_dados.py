@@ -22,6 +22,6 @@ def database_url() -> str:
 
 
 def conectar() -> psycopg.Connection:
-    # ponytail: uma conexão por pergunta, sem pool. Simples e sem conexão
+    # Uma conexão por pergunta, sem pool. Simples e sem conexão
     # velha caindo no meio da demo; usar psycopg_pool se o acesso crescer.
     return psycopg.connect(database_url(), connect_timeout=15, autocommit=True)

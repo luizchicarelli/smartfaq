@@ -267,7 +267,7 @@ def carregar_banco() -> pd.DataFrame:
 # ============================================================
 
 def carregar_unidades():
-    # ponytail: só Marília; com outra cidade, filtrar pelo município escolhido na tela
+    # Só Marília; com outra cidade, filtrar pelo município escolhido na tela
     try:
         return _consultar(
             "select nome as \"Unidade\", endereco as \"Endereço\", bairro as \"Bairro\", "
