@@ -233,3 +233,14 @@ Supabase (são pulados sem `DATABASE_URL`) e não deixam nada gravado.
 
 Bacharelado em Inteligência Artificial — Universidade de Marília (UNIMAR)
 Disciplina: Fábrica de Projetos Ágeis (4º Termo)
+
+Duplas:
+### Dados e base de conhecimento:
+- Enzo 
+- Gabriel Marques
+### Núcleo de IA (RAG):
+- Luiz Henrique Soares Chicarelli de Andrade
+- Gabriel Almeida
+### Interface, testes e documentação:
+- Felipe
+- Estivo
