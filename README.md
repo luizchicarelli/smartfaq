@@ -159,7 +159,6 @@ requirements.txt        dependências
 PENDENCIAS.md           o que falta verificar e limitações conhecidas
 .github/workflows/      atualização diária dos dados
 sql/                    esquema do banco, carga inicial e aplicar.py
-notebooks/              notebook original da Dupla 1 (histórico, usa Chroma)
 testes/
   test_rag.py               guardrails e geração de resposta (sem rede)
   test_pipeline_dados.py    extração e lógica de busca (sem rede)

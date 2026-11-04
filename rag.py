@@ -417,10 +417,9 @@ def responder_assistente(
     tratando entrada vazia e falha de busca de forma controlada (RF08,
     RF09, RF10, RF12 e seção 17 — Tratamento de erros, da documentação).
 
-    `buscar_fn` é a função `buscar(pergunta, k)` do notebook da Dupla 1
+    `buscar_fn` é a função `buscar(pergunta, k)` de `pipeline_dados.py`
     (passada por parâmetro em vez de importada direto, pra este módulo
-    não depender de rodar dentro do mesmo notebook — pode ser chamado de
-    qualquer lugar, inclusive da interface da Dupla 3).
+    poder ser chamado de qualquer lugar, inclusive da interface).
     """
     pergunta_normalizada = (pergunta or "").strip()
 
