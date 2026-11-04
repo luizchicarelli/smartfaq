@@ -5,7 +5,7 @@ extracao caso algum PDF novo apresente comportamento estranho.
 
 Rode a partir da RAIZ do projeto:
 
-    python testes/inspecionar_pdf.py [nome_do_arquivo.pdf]
+    python testes/inspecionar_pdf.py [caminho_do_arquivo.pdf]
 """
 import os
 import sys
@@ -16,8 +16,7 @@ sys.path.insert(0, RAIZ_PROJETO)
 from langchain_community.document_loaders import PyPDFLoader
 import pypdf
 
-ARQUIVO = sys.argv[1] if len(sys.argv) > 1 else "vacinacao_criancas.pdf"
-CAMINHO = os.path.join(RAIZ_PROJETO, "dados", ARQUIVO)
+CAMINHO = sys.argv[1] if len(sys.argv) > 1 else os.path.join(RAIZ_PROJETO, "testes", "fixtures", "vacinacao_criancas.pdf")
 
 print("Versao do pypdf instalada:", pypdf.__version__)
 

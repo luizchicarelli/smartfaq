@@ -1,8 +1,7 @@
 """
 Script de diagnostico: testa a chave do Gemini isoladamente, fora do
 Streamlit, para ver o erro exato (se houver) e testa a inicializacao
-completa do pipeline de dados (extracao + chunking + embeddings + banco
-vetorial Chroma).
+do pipeline de dados (conexao com o Supabase + modelo de embeddings).
 
 Rode a partir da RAIZ do projeto (onde esta o app.py):
 
@@ -59,7 +58,7 @@ def main():
     print("\nAgora testando pipeline_dados.inicializar() (pode demorar um pouco)...")
     try:
         import pipeline_dados
-        pipeline_dados.inicializar(pasta_dados=os.path.join(RAIZ_PROJETO, "dados"))
+        pipeline_dados.inicializar()
         print("pipeline_dados.inicializar() rodou SEM erro.")
     except Exception:
         print("pipeline_dados.inicializar() FALHOU. Erro completo abaixo:")

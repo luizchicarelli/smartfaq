@@ -19,7 +19,7 @@ import pipeline_dados
 print(f"import pipeline_dados: {time.perf_counter() - t:.2f}s")
 
 t = time.perf_counter()
-pipeline_dados.inicializar(pasta_dados=os.path.join(RAIZ_PROJETO, "dados"))
+pipeline_dados.inicializar()
 print(f"inicializar(): {time.perf_counter() - t:.2f}s")
 
 for pergunta in [

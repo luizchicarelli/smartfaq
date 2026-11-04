@@ -8,25 +8,17 @@ Rode a partir da RAIZ do projeto:
 """
 import os
 import sys
-import tomllib
 
 import psycopg
 
-
-def database_url() -> str:
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        with open(".streamlit/secrets.toml", "rb") as f:
-            url = tomllib.load(f).get("DATABASE_URL")
-    if not url:
-        sys.exit("DATABASE_URL não configurado (secrets.toml ou variável de ambiente).")
-    return url
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import banco_dados
 
 
 if __name__ == "__main__":
     caminho = sys.argv[1]
     with open(caminho, encoding="utf-8") as f:
         sql = f.read()
-    with psycopg.connect(database_url(), connect_timeout=15) as conexao:
+    with psycopg.connect(banco_dados.database_url(), connect_timeout=15) as conexao:
         conexao.execute(sql)  # commit automático ao sair do with; rollback se der erro
     print(f"Aplicado: {caminho}")

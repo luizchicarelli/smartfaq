@@ -18,34 +18,6 @@ st.set_page_config(
 
 
 # ============================================================
-# CAMINHOS DOS ARQUIVOS
-# ============================================================
-
-PASTA_DADOS = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "dados",
-)
-
-CSV_PATH = os.path.join(
-    PASTA_DADOS,
-    "banco_perguntas.csv"
-)
-# Banco unificado: junta banco_perguntas_teste.csv (30 perguntas gerais)
-# e banco_perguntas_vacinacao.csv (30 perguntas de vacinação por faixa etária)
-# em um único arquivo, com ids renumerados sequencialmente.
-
-CSV_UNIDADES_PATH = os.path.join(
-    PASTA_DADOS,
-    "ubs_marilia.csv"
-)
-
-# Pasta onde estão os PDFs/txt de origem usados pelo `pipeline_dados`
-# (Dupla 1) pra montar o índice vetorial, e onde o banco vetorial
-# (chroma_db/) é criado.
-PASTA_DADOS_RAG = PASTA_DADOS
-
-
-# ============================================================
 # MENSAGENS
 # ============================================================
 
@@ -199,6 +171,13 @@ def carregar_nucleo_rag():
     except ImportError:
         return None
 
+    # No Streamlit Cloud a conexão vem dos secrets; banco_dados lê do ambiente
+    try:
+        if st.secrets.get("DATABASE_URL"):
+            os.environ.setdefault("DATABASE_URL", st.secrets["DATABASE_URL"])
+    except Exception:
+        pass
+
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         try:
@@ -209,7 +188,7 @@ def carregar_nucleo_rag():
         return None
 
     try:
-        pipeline_dados.inicializar(pasta_dados=PASTA_DADOS_RAG)
+        pipeline_dados.inicializar()
     except Exception as erro:
         st.sidebar.warning(f"Núcleo RAG não pôde ser inicializado: {erro}")
         return None
@@ -242,84 +221,43 @@ def responder_via_rag(pergunta_usuario: str, nucleo_rag) -> tuple:
 # CARREGAR BANCO DE PERGUNTAS
 # ============================================================
 
-@st.cache_data
-def carregar_banco():
+@st.cache_data(ttl=3600)
+def _consultar(sql: str) -> pd.DataFrame:
+    import banco_dados
 
-    if not os.path.exists(CSV_PATH):
+    with banco_dados.conectar() as conexao:
+        cursor = conexao.execute(sql)
+        colunas = [c.name for c in cursor.description]
+        return pd.DataFrame(cursor.fetchall(), columns=colunas)
 
-        st.error(
-            f"Arquivo CSV não encontrado:\n\n"
-            f"{CSV_PATH}\n\n"
-            f"Coloque o arquivo 'banco_perguntas.csv' "
-            f"na mesma pasta do app.py."
-        )
 
-        st.stop()
-
+def carregar_banco() -> pd.DataFrame:
+    # Conjunto de avaliação: só responde direto no modo protótipo
     try:
-
-        banco = pd.read_csv(CSV_PATH)
-
-    except Exception as erro:
-
-        st.error(
-            f"Erro ao ler o arquivo CSV: {erro}"
+        return _consultar(
+            "select id, pergunta, categoria, dentro_escopo, resposta_esperada "
+            "from perguntas_avaliacao order by id"
         )
-
-        st.stop()
-
-    colunas_obrigatorias = [
-        "id",
-        "pergunta",
-        "resposta_esperada",
-        "categoria",
-        "dentro_escopo",
-    ]
-
-    colunas_faltando = [
-        coluna
-        for coluna in colunas_obrigatorias
-        if coluna not in banco.columns
-    ]
-
-    if colunas_faltando:
-
-        st.error(
-            "O arquivo CSV não possui as seguintes "
-            "colunas obrigatórias: "
-            + ", ".join(colunas_faltando)
+    except Exception:
+        st.warning("Não foi possível carregar o banco de perguntas agora.")
+        return pd.DataFrame(
+            columns=["id", "pergunta", "categoria", "dentro_escopo", "resposta_esperada"]
         )
-
-        st.stop()
-
-    return banco
 
 
 # ============================================================
 # CARREGAR DADOS DAS UBS
 # ============================================================
 
-@st.cache_data
 def carregar_unidades():
-
-    if not os.path.exists(CSV_UNIDADES_PATH):
-
-        return None
-
+    # ponytail: só Marília; com outra cidade, filtrar pelo município escolhido na tela
     try:
-
-        unidades = pd.read_csv(
-            CSV_UNIDADES_PATH
+        return _consultar(
+            "select nome as \"Unidade\", endereco as \"Endereço\", bairro as \"Bairro\", "
+            "telefone as \"Telefone\", email as \"E-mail\", turno as \"Atendimento\" "
+            "from unidades where codigo_ibge = '352900' order by nome"
         )
-
-        return unidades
-
-    except Exception as erro:
-
-        st.error(
-            f"Erro ao ler o arquivo 'ubs_marilia.csv': {erro}"
-        )
-
+    except Exception:
         return None
 
 
@@ -442,9 +380,7 @@ def responder(
         return (
             linha["resposta_esperada"],
             linha["categoria"],
-            str(
-                linha["dentro_escopo"]
-            ).lower() == "sim",
+            bool(linha["dentro_escopo"]),
             "banco fixo"
         )
 
@@ -587,8 +523,8 @@ if enviar and pergunta_usuario.strip():
             )
 
             st.write(
-                "As informações abaixo foram carregadas "
-                "do arquivo de unidades de saúde."
+                "As informações abaixo vêm do CNES, o cadastro "
+                "nacional de estabelecimentos de saúde."
             )
 
 
@@ -663,8 +599,8 @@ if enviar and pergunta_usuario.strip():
             )
 
             st.info(
-                "Verifique se o arquivo 'ubs_marilia.csv' "
-                "está na mesma pasta do app.py."
+                "Tente novamente em instantes ou ligue para o "
+                "Disque Saúde 136."
             )
 
 

@@ -59,35 +59,40 @@ qualquer pergunta clínica é redirecionada para a UBS/profissional de saúde.
 
 ## Fontes de dados
 
-- 5 PDFs do **Calendário Nacional de Vacinação** (Ministério da Saúde):
-  criança, adolescente, adulto, idoso, gestante
-- Lista de UBS/USF de Marília (Secretaria Municipal de Saúde), em `.txt` e `.csv`
-- Banco de 60 perguntas de teste com respostas validadas manualmente (`banco_perguntas.csv`)
+Todos os dados moram no **Supabase** (Postgres + pgvector). Não há dado local:
+o job `atualizar_dados.py` baixa as fontes oficiais e grava no banco.
+
+| Dado | Fonte | Observação |
+|---|---|---|
+| Vacinação | [Instrução Normativa do Calendário Nacional de Vacinação](https://www.gov.br/saude/pt-br/vacinacao/publicacoes) | O job acha a edição mais recente na página oficial |
+| Unidades de saúde | [API de dados abertos do CNES](https://apidadosabertos.saude.gov.br/cnes/estabelecimentos) | Tipos 1 e 2, só quem atende pelo SUS |
+
+Tabelas: `fontes` (origem, hash, datas), `chunks` (trechos + embedding),
+`unidades` (CNES), `perguntas_avaliacao` (60 perguntas de teste) e
+`log_ingestao`. O esquema está em `sql/`. `fontes` e `unidades` têm o campo
+`codigo_ibge`: outra cidade é só mais um código em `MUNICIPIOS`
+(`atualizar_dados.py`). Hoje só Marília (352900) é carregada.
 
 ## Estrutura do repositório
 
 ```
-app.py                      interface Streamlit (Dupla 3)
-pipeline_dados.py           extração, chunking, embeddings, busca (Dupla 1)
-rag.py                      prompt, guardrails, geração de resposta (Dupla 2)
-requirements.txt            dependências Python
-.streamlit/
-  secrets.toml.example      modelo do arquivo de chave de API (copie e preencha)
-dados/
-  vacinacao_*.pdf           PDFs oficiais do calendário de vacinação
-  ubs_marilia.txt / .csv    lista de UBS/USF de Marília
-  banco_perguntas.csv       banco de 60 perguntas de teste com respostas validadas
-notebooks/
-  FAQ_inteligente_1_2.ipynb notebook original da Dupla 1 (mesma lógica do pipeline_dados.py)
+app.py                  interface Streamlit (Dupla 3)
+pipeline_dados.py       extração, chunking, embeddings, busca (Dupla 1)
+rag.py                  prompt, guardrails, geração de resposta (Dupla 2)
+banco_dados.py          conexão com o Supabase
+atualizar_dados.py      job de ingestão (hash, reindexação, log)
+sql/                    esquema do banco e aplicar.py
+notebooks/              notebook original da Dupla 1 (histórico, usa Chroma)
 testes/
-  test_rag.py                testes automatizados dos guardrails e da geração de resposta
-  test_pipeline_dados.py     testes automatizados de extração/busca (inclui testes de regressão)
-  testar_gemini.py           script manual: testa a chave da API e a inicialização do pipeline
-  test_casos_demo.py         testes dos casos da demonstração + robustez do Gemini
-  diagnosticar_chroma.py     script manual: inspeciona o conteúdo do banco vetorial
-  medir_desempenho.py        script manual: tempo de cada etapa (import, índice, busca)
-  calibrar_limiar.py         script manual: distâncias das 60 perguntas, para calibrar o limiar
-  inspecionar_pdf.py         script manual: mostra o texto bruto extraído de um PDF
+  test_rag.py               guardrails e geração de resposta (sem rede)
+  test_pipeline_dados.py    extração e lógica de busca (sem rede)
+  test_casos_demo.py        casos da demonstração contra o banco real
+  test_atualizar_dados.py   job de ingestão (transação desfeita no fim)
+  fixtures/                 PDF usado no teste de extração
+  medir_desempenho.py       script manual: tempo de cada etapa
+  calibrar_limiar.py        script manual: distâncias para calibrar o limiar
+  testar_gemini.py          script manual: testa a chave e a inicialização
+  inspecionar_pdf.py        script manual: texto bruto de um PDF
 ```
 
 ## Pré-requisitos
@@ -125,63 +130,44 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configure a chave do Gemini
+### 4. Configure os segredos
 
-1. Gere uma chave gratuita em **https://aistudio.google.com/apikey**
-   (não precisa configurar faturamento — a camada gratuita é suficiente)
-2. Copie o arquivo de exemplo:
-   ```bash
-   # Windows:
-   copy .streamlit\secrets.toml.example .streamlit\secrets.toml
-   # Mac/Linux:
-   cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-   ```
-3. Abra `.streamlit/secrets.toml` e troque `"sua-chave-aqui"` pela sua chave
-   real — **mantenha as aspas**, senão o Streamlit não consegue ler o arquivo.
+Copie `.streamlit/secrets.toml.example` para `.streamlit/secrets.toml` e preencha:
 
-> O arquivo `.streamlit/secrets.toml` (com a chave de verdade) já está no
-> `.gitignore` — nunca vai parar no GitHub.
+- `GEMINI_API_KEY`: chave gratuita em **https://aistudio.google.com/apikey**
+- `DATABASE_URL`: no painel do Supabase, *Connect > Session pooler > URI*
 
-### 5. Rode o app
+Mantenha as aspas. O arquivo está no `.gitignore` e nunca vai para o GitHub.
+
+### 5. Prepare o banco (só uma vez, em um banco novo)
+
+```bash
+python sql/aplicar.py sql/001_esquema.sql
+python sql/aplicar.py sql/002_unidades_e_municipio.sql
+python sql/aplicar.py sql/003_perguntas_avaliacao.sql
+python atualizar_dados.py
+```
+
+Rode `python atualizar_dados.py` de novo quando quiser: se nada mudou, ele não
+regrava nada. Use `--forcar` para reindexar depois de mudar o chunking.
+
+### 6. Rode o app
 
 ```bash
 streamlit run app.py
 ```
 
-Abre automaticamente no navegador (normalmente `http://localhost:8501`). Na
-primeira execução, o núcleo RAG monta o banco vetorial do zero (extrai os
-PDFs, gera embeddings) — isso demora um pouco só na primeira vez. Se tudo
-estiver certo, a barra lateral mostra **🟢 Núcleo RAG ativo**. Se a chave
-não estiver configurada corretamente, mostra **🟡 Modo protótipo** (o app
-ainda funciona, só que com respostas fixas do banco de testes em vez do RAG).
+A barra lateral mostra **🟢 Núcleo RAG ativo** quando chave e banco estão certos.
+Sem chave, mostra **🟡 Modo protótipo**: responde direto da tabela de perguntas.
 
 ## Como rodar os testes
 
 ```bash
-# Todos os testes automatizados
 python -m pytest testes/ -v
-
-# Só os testes do núcleo RAG (rápido, não precisa de internet nem de chave)
-python -m pytest testes/test_rag.py -v
-
-# Só os testes do pipeline de dados (precisa dos PDFs reais, baixa o
-# modelo de embeddings na primeira vez)
-python -m pytest testes/test_pipeline_dados.py -v
 ```
 
-Scripts de diagnóstico manual (não são testes automatizados, mas ajudam a
-depurar problemas de configuração):
-
-```bash
-# Testa a chave de API isoladamente e a inicialização completa do pipeline
-python testes/testar_gemini.py
-
-# Inspeciona o que realmente foi indexado no banco vetorial
-python testes/diagnosticar_chroma.py
-
-# Mostra o texto bruto extraído de um PDF (útil se um PDF novo der problema)
-python testes/inspecionar_pdf.py vacinacao_criancas.pdf
-```
+`test_rag.py` e `test_pipeline_dados.py` não usam rede. Os outros dois usam o
+Supabase (são pulados sem `DATABASE_URL`) e não deixam nada gravado.
 
 ## Decisões técnicas e limitações conhecidas
 
@@ -189,30 +175,37 @@ python testes/inspecionar_pdf.py vacinacao_criancas.pdf
   camada gratuita generosa. O adaptador em `rag.py` é plugável — trocar de
   provedor é só escrever uma nova função `chamar_llm(prompt) -> str`
   (já existe um exemplo pronto para OpenAI em `criar_chamar_llm_openai`).
-- **Modelo do Gemini configurável**: `GEMINI_MODEL` no `secrets.toml` ou
-  variável de ambiente (padrão `gemini-3.8-flash`). A chamada tem timeout de
-  30 s e até 3 tentativas com backoff em cota (429), erro 5xx ou falha de
-  rede. Modelo descontinuado (404) gera erro claro no log
-  (`[llm] ERRO DE CONFIGURAÇÃO`), sem retry.
-- **Limiar de contexto suficiente** (`LIMIAR_DISTANCIA_SUFICIENTE` em
-  `rag.py`, `0.47`): calibrado com `testes/calibrar_limiar.py`. Nas 60
-  perguntas do banco, as que a base cobre (vacinação) ficaram com distância
-  ≤ 0.434 e todas as outras (clínicas, fora do domínio, agendamento/horário)
-  ≥ 0.504; o limiar fica no meio desse vão. Recalibrar ao adicionar fontes.
-- **Banco fixo (CSV) fora da produção**: com o núcleo RAG ativo, toda
-  pergunta vai para o RAG. O CSV de 60 perguntas serve como conjunto de
-  avaliação e só responde direto no modo protótipo (sem chave de API).
-- **Limitação atual**: a base só tem calendário de vacinação e lista de UBS.
-  Perguntas de agendamento, documentos e horários caem em "não encontrei"
-  até essas fontes entrarem (Fase 2).
-- **Índice vetorial** em `dados/chroma_db` (caminho absoluto), com um único
-  cliente Chroma por processo; o índice só é montado se ainda não existir.
+- **Gemini com modelo reserva**: `GEMINI_MODEL` (padrão `gemini-3.8-flash`) e
+  `GEMINI_MODEL_RESERVA` (padrão `gemini-3.5-flash`). Em sobrecarga (503/504),
+  cota (429) ou falha de rede, passa na hora para a reserva. Em teste real o
+  modelo principal estava fora por excesso de demanda, o que explica travas
+  como as da demonstração.
+- **Limiar de contexto suficiente** (`0.41`): calibrado com
+  `testes/calibrar_limiar.py` sobre a Instrução Normativa: o que a base cobre
+  fica com distância ≤ 0.388 e o que não cobre a partir de 0.435.
+- **Por que a Instrução Normativa, e não os calendários em PDF**: os
+  calendários publicados hoje no gov.br não têm camada de texto (0 caracteres
+  extraídos). O job recusa PDF assim e mantém a versão anterior.
+- **Busca**: a IN é organizada por vacina, então o texto é dividido por seção
+  de vacina. Pergunta por idade ou por grupo traz todas as vacinas que batem,
+  para não dar uma lista cortada.
+- **Banco de perguntas**: virou a tabela `perguntas_avaliacao`, usada para
+  avaliação. Com o RAG ativo, não responde usuário.
+- **Só Supabase**: o Chroma local foi removido; desenvolver e testar a busca
+  precisa de internet. A lógica de busca tem testes sem rede.
+- **Limitações atuais**:
+  - Horários exatos: o CNES só informa o turno (ex.: manhã e tarde).
+  - Agendamento e documentos: não estão nas fontes, a resposta é "não encontrei".
+  - Lista por grupo: só traz vacinas cuja seção cita o grupo pelo nome, então
+    "quais vacinas um idoso deve tomar" pode vir incompleta (faltam as indicadas
+    por faixa etária, sem a palavra "idoso").
+  - "Atualizado em" é a data em que o job detectou a mudança na fonte.
 - **Guardrails em duas camadas**: `guardrail_pre` (antes de chamar o LLM,
   baseado em palavras-chave) e `guardrail_pos` (depois, baseado em padrões de
   texto de risco clínico) — defesa em profundidade, já que nenhuma das duas
   sozinha é 100% confiável.
-- O modelo de embeddings e o banco vetorial (Chroma) rodam **localmente**,
-  sem custo de API — só a geração da resposta final usa a API do Gemini.
+- O modelo de embeddings roda **localmente**, sem custo de API. A geração da
+  resposta usa a API do Gemini e os dados ficam no Supabase.
 
 ## Equipe
 
