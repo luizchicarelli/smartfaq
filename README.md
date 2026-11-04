@@ -27,9 +27,9 @@ Pergunta do usuário
       ▼
 ┌─────────────────────┐
 │  buscar()              │  busca híbrida:
-│  (pipeline_dados.py)   │   1) pergunta cita uma UBS pelo nome? → bloco exato
-│                        │   2) pergunta cita uma idade (ex. "2 meses")? → bloco exato
-│                        │   3) senão → busca semântica no Chroma (embeddings)
+│  (pipeline_dados.py)   │   1) pergunta cita uma UBS pelo nome? → tabela unidades
+│                        │   2) pergunta cita idade ou grupo? → todas as vacinas que batem
+│                        │   3) senão → busca semântica no Supabase (pgvector)
 └─────────────────────┘
       │
       ▼
