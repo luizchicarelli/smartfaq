@@ -255,6 +255,47 @@ python -m pytest testes/ -v
 São 56 testes. `test_rag.py` e `test_pipeline_dados.py` não usam rede. Os outros
 dois usam o Supabase (são pulados sem `DATABASE_URL`) e não deixam nada gravado.
 
+## Parâmetros atuais
+
+| Parâmetro | Valor |
+|---|---|
+| Modelo de embeddings | `paraphrase-multilingual-MiniLM-L12-v2`, com vetores de 384 dimensões |
+| Banco vetorial | Supabase com pgvector, índice HNSW e distância de cosseno |
+| Divisão do texto | Por seção de vacina, com até 2000 caracteres por trecho e sem sobreposição |
+| Identificação do trecho | O nome da vacina é repetido no início de cada trecho |
+| Trechos na busca semântica (top-k) | 3; perguntas por idade ou grupo trazem todas as vacinas que batem |
+| Limiar de distância | `0.41` |
+| LLM | Google Gemini: `gemini-3.8-flash`, com 2 modelos reserva |
+| Edição da fonte de vacinação | Instrução Normativa de 2026 |
+| Formato das fontes na resposta | `Título (atualizado em dd/mm/aaaa) — link` |
+
+**Prompt final** (`PROMPT_SISTEMA` e `montar_prompt` em `rag.py`): traz 7 regras, seguidas
+do contexto delimitado e da pergunta. Cada trecho vai como `[TRECHO n | fonte: nome]`. As
+regras mandam:
+
+1. Responder só com base no contexto.
+2. Dizer que não encontrou quando faltar informação.
+3. Apontar conflito entre fontes.
+4. Nunca dar orientação clínica.
+5. Manter as condições do público da vacina.
+6. Trazer listas de vacinas completas.
+7. Ser objetivo e não citar fontes, porque o sistema as acrescenta ao final.
+
+**Versões principais** (ambiente local, Python 3.12.9, em 04/11/2026):
+
+| Pacote | Versão |
+|---|---|
+| streamlit | 1.50.0 |
+| pandas | 2.3.3 |
+| psycopg / psycopg-binary | 3.3.7 |
+| pypdf | 6.21.4 |
+| fastembed | 0.9.1 |
+| google-genai | 2.34.0 |
+| pytest | 9.2.0 |
+
+O `requirements.txt` fixa só o Streamlit; nos outros pacotes define a versão mínima, então
+uma instalação nova pode trazer versões mais recentes.
+
 ## Decisões técnicas
 
 - **Gemini com modelos reserva:** `GEMINI_MODEL` (padrão `gemini-3.8-flash`) e
