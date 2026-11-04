@@ -1,5 +1,7 @@
 # Interface
-streamlit>=1.50
+# ponytail: versão fixa. Na 1.66 (servidor uvicorn), o Streamlit Cloud devolvia erro 500 em
+# 15% dos arquivos da página. Testar outra versão no app publicado antes de subir.
+streamlit==1.50.0
 
 # Dados
 pandas>=2.2
