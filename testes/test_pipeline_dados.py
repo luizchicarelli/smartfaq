@@ -118,11 +118,19 @@ def test_trechos_do_grupo_usa_o_publico_de_cada_vacina():
     assert titulos("gestante") == {"Vacina Todos"}
 
 
+def test_toda_a_populacao_indigena_nao_e_toda_a_populacao():
+    # Bug real: varicela (contraindicada na gestação) entrava na lista da gestante
+    chunks = [_secao("Varicela", "• Povos indígenas: indicada para toda a população indígena a partir de 15 meses.")]
+    assert pd.trechos_do_grupo("gestante", chunks) == []
+    assert len(pd.trechos_do_grupo("idoso", chunks)) == 1
+
+
 def test_extrair_grupo():
     assert pd._extrair_grupo("Quais vacinas um idoso deve tomar?") == "idoso"
     assert pd._extrair_grupo("vacinas para idosos") == "idoso"
     assert pd._extrair_grupo("Quais vacinas tomar com 65 anos?") == "idoso"
     assert pd._extrair_grupo("Quais vacinas tomar aos 30 anos?") == "adulto"
+    assert pd._extrair_grupo("Quais vacinas uma criança deve tomar?") == "crianca"
     # Pergunta sobre uma vacina específica não é pedido de lista
     assert pd._extrair_grupo("O idoso precisa tomar vacina da gripe?") is None
 

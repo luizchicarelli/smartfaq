@@ -177,11 +177,11 @@ Supabase (são pulados sem `DATABASE_URL`) e não deixam nada gravado.
   camada gratuita generosa. O adaptador em `rag.py` é plugável — trocar de
   provedor é só escrever uma nova função `chamar_llm(prompt) -> str`
   (já existe um exemplo pronto para OpenAI em `criar_chamar_llm_openai`).
-- **Gemini com modelo reserva**: `GEMINI_MODEL` (padrão `gemini-3.8-flash`) e
-  `GEMINI_MODEL_RESERVA` (padrão `gemini-3.5-flash`). Em sobrecarga (503/504),
-  cota (429) ou falha de rede, passa na hora para a reserva. Em teste real o
-  modelo principal estava fora por excesso de demanda, o que explica travas
-  como as da demonstração.
+- **Gemini com modelos reserva**: `GEMINI_MODEL` (padrão `gemini-3.8-flash`) e
+  `GEMINI_MODELS_RESERVA` (padrão `gemini-3.5-flash,gemini-flash-lite-latest`). Em
+  sobrecarga (503/504), cota (429) ou falha de rede, passa na hora para o próximo.
+  A cota gratuita era de 20 pedidos por dia por modelo em 04/11/2026; o app guarda
+  em memória as respostas já dadas para pergunta repetida não gastar cota.
 - **Limiar de contexto suficiente** (`0.41`): calibrado com
   `testes/calibrar_limiar.py` sobre a Instrução Normativa: o que a base cobre
   fica com distância ≤ 0.389 e o que não cobre a partir de 0.436.

@@ -189,8 +189,9 @@ def texto_da_unidade(unidade: dict, municipio: str = "") -> str:
 
 # Faixa etária de cada grupo, em anos. Gestante não tem faixa de propósito: vacina
 # "para a população de X a Y anos" pode ser contraindicada na gravidez (ex.: tríplice viral)
-FAIXAS_GRUPOS = {"idoso": (60, 130), "adulto": (25, 59), "adolescente": (10, 24)}
-PADROES_GRUPOS = {"idoso": r'\bidos|superior a 60', "adulto": r'\badult', "adolescente": r'\badolescente', "gestante": r'\bgestante'}
+FAIXAS_GRUPOS = {"idoso": (60, 130), "adulto": (25, 59), "adolescente": (10, 24), "crianca": (0, 9)}
+PADROES_GRUPOS = {"idoso": r'\bidos|superior a 60', "adulto": r'\badult', "adolescente": r'\badolescente',
+                  "gestante": r'\bgestante', "crianca": r'\bcrianca'}
 
 def _extrair_grupo(pergunta: str):
   #"Quais vacinas um idoso deve tomar?" / "vacinas aos 65 anos": pede a lista do grupo, não uma vacina específica
@@ -210,7 +211,8 @@ def _extrair_grupo(pergunta: str):
 def _item_vale_para_grupo(item: str, grupo: str) -> bool:
   #Um item do público de uma vacina (ex.: "População a partir de 7 anos de idade") vale para o grupo?
   item = _normalizar(item)
-  if "toda a populacao" in item or re.search(PADROES_GRUPOS[grupo], item):
+  #"toda a população indígena" é povo específico, não toda a população: pegava varicela, contraindicada na gestante
+  if re.search(r'toda a populacao(?! indigena)', item) or re.search(PADROES_GRUPOS[grupo], item):
     return True
   if grupo not in FAIXAS_GRUPOS:
     return False
@@ -237,9 +239,20 @@ def trechos_do_grupo(grupo: str, chunks: list) -> list:
 
   trechos = []
   for (titulo, fonte), partes in secoes.items():
-    m = re.search(r'Idade para vacinação(?: e/ou |/)grupo recomendado(.*?)Esquema de vacinação', " ".join(partes))
-    if m and any(_item_vale_para_grupo(item, grupo) for item in m.group(1).split("•")[1:]):
-      trechos.append((fonte, f"{titulo} Público recomendado: {m.group(1).strip()[:1000]}"))
+    secao = " ".join(partes)
+    m = re.search(r'Idade para vacinação(?: e/ou |/)grupo recomendado(.*?)Esquema de vacinação', secao)
+    if not m:
+      continue
+    publico = f"{titulo} Público recomendado: {m.group(1).strip()[:1000]}"
+    if any(_item_vale_para_grupo(item, grupo) for item in m.group(1).split("•")[1:]):
+      extra = re.search(r'Sem histórico vacinal, administrar 3 doses.{0,250}?2 doses de dT;.{0,80}?gestação', secao)
+      #A dT da gestante está descrita na seção da dTpa, não na própria seção da dT
+      trechos.append((fonte, f"{publico} Gestante: {extra.group(0)}." if grupo == "gestante" and extra else publico))
+      continue
+    #Povos indígenas podem estar fora do bloco de público (ex.: pneumocócica a partir de 5 anos)
+    indigena = re.search(r'Povos indígenas a partir de \d+ anos[^(.]*', secao)
+    if grupo in FAIXAS_GRUPOS and grupo != "crianca" and indigena:
+      trechos.append((fonte, f"{publico} Indicação para este grupo somente em: {indigena.group(0).strip()}."))
   return trechos
 
 def _nome_base_unidade(nome: str) -> str:

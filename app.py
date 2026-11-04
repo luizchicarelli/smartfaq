@@ -201,20 +201,37 @@ def carregar_nucleo_rag():
     return (pipeline_dados.buscar, nucleo_rag.responder_assistente, chamar_llm)
 
 
+@st.cache_resource
+def _respostas_recentes() -> dict:
+    return {}
+
+
 def responder_via_rag(pergunta_usuario: str, nucleo_rag) -> tuple:
     """
     Chama o núcleo RAG real e converte o `ResultadoRAG` pro mesmo formato
     de tupla que `responder()` já devolve, pra não precisar mudar nada
     na parte da interface que consome o resultado.
     """
+    # A cota gratuita do Gemini é pequena: pergunta repetida não gasta outra chamada.
+    # Só em memória, nada vai para disco nem para o banco (LGPD).
+    cache = _respostas_recentes()
+    chave = " ".join(pergunta_usuario.lower().split())
+    if chave in cache:
+        return cache[chave]
+
     buscar_fn, responder_assistente_fn, chamar_llm = nucleo_rag
     resultado = responder_assistente_fn(pergunta_usuario, buscar_fn, chamar_llm)
-    return (
+    resposta = (
         resultado.resposta,
         f"RAG ({resultado.status} / {resultado.origem_contexto})",
         resultado.dentro_escopo,
         "rag",
     )
+    if resultado.status == "respondida":  # erro passageiro não pode ficar guardado
+        if len(cache) >= 500:
+            cache.clear()
+        cache[chave] = resposta
+    return resposta
 
 
 # ============================================================

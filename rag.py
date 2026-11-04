@@ -62,7 +62,11 @@ Regras obrigatórias:
    casos, oriente a pessoa a procurar a UBS/profissional de saúde.
 5. Se um trecho limitar o público da vacina (ex.: "em casos excepcionais",
    "trabalhador de saúde", "acamado"), mantenha essa condição na resposta.
-6. Seja direto e objetivo. Não repita o contexto literalmente — responda à
+6. Se a pergunta pedir uma lista de vacinas, inclua TODAS as vacinas presentes
+   nos trechos, inclusive as indicadas para "toda a população" e as citadas
+   dentro do esquema de outra vacina (ex.: dT no esquema da dTpa). Lista
+   incompleta é um erro grave. Não atribua a um grupo a indicação de outro grupo.
+7. Seja direto e objetivo. Não repita o contexto literalmente — responda à
    pergunta em linguagem natural. Não cite fontes nem trechos: o sistema
    acrescenta a fonte oficial automaticamente ao final.
 """
@@ -468,13 +472,13 @@ def criar_chamar_llm_mock() -> Callable[[str], str]:
 
 
 MODELO_GEMINI_PADRAO = "gemini-3.8-flash"
-MODELO_GEMINI_RESERVA = "gemini-3.5-flash"
+MODELOS_GEMINI_RESERVA = ["gemini-3.5-flash", "gemini-flash-lite-latest"]
 
 
 def criar_chamar_llm_gemini(
     api_key: str,
     modelo: Optional[str] = None,
-    reserva: Optional[str] = None,
+    reservas: Optional[list] = None,
     timeout_s: float = 20,
     tentativas: int = 2,
 ) -> Callable[[str], str]:
@@ -482,7 +486,9 @@ def criar_chamar_llm_gemini(
     Adaptador pra Google Gemini (grátis via Google AI Studio).
     Requer: pip install google-genai
 
-    - Modelos configuráveis: `modelo`/GEMINI_MODEL e `reserva`/GEMINI_MODEL_RESERVA.
+    - Modelos configuráveis: `modelo`/GEMINI_MODEL e `reservas`/GEMINI_MODELS_RESERVA
+      (separados por vírgula). A cota gratuita é por modelo: 20 pedidos por dia
+      em 04/11/2026, então cada reserva também dá mais fôlego.
     - Em sobrecarga (503/504), cota (429) ou falha de rede passa NA HORA pro
       modelo reserva: esperar o mesmo modelo não adianta num pico de demanda,
       e foi isso que travou a demo. Se todos falharem, espera (1s, 2s...) e
@@ -493,9 +499,10 @@ def criar_chamar_llm_gemini(
     from google import genai
     from google.genai import errors, types
 
+    reservas_env = [m.strip() for m in os.environ.get("GEMINI_MODELS_RESERVA", "").split(",") if m.strip()]
     modelos = list(dict.fromkeys([
         modelo or os.environ.get("GEMINI_MODEL") or MODELO_GEMINI_PADRAO,
-        reserva or os.environ.get("GEMINI_MODEL_RESERVA") or MODELO_GEMINI_RESERVA,
+        *(reservas if reservas is not None else reservas_env or MODELOS_GEMINI_RESERVA),
     ]))
     cliente = genai.Client(
         api_key=api_key,

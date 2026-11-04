@@ -61,24 +61,41 @@ def test_2_meses_traz_todas_as_vacinas_da_idade(buscar):
         assert vacina in contexto
 
 
-# Gabarito: os calendários oficiais de 2026 por grupo (ainda no histórico do git)
-@pytest.mark.parametrize("pergunta,vacinas", [
-    ("Quais vacinas um idoso deve tomar?",
-     ("hepatite b", "dupla adulto", "febre amarela", "tríplice viral", "pneumocócica", "influenza", "varicela", "covid")),
-    ("Quais vacinas tomar aos 70 anos?",
-     ("hepatite b", "dupla adulto", "influenza", "covid")),
+# Gabarito: os calendários oficiais de 2026 por grupo (ainda no histórico do git,
+# commit 3da0f23). Marca cada vacina pelo nome da seção da Instrução Normativa.
+HB, DT, VFA, SCR, VPC20 = "hepatite b", "dupla adulto", "febre amarela", "tríplice viral", "vpc 20"
+INF, COVID, VZ, HPV, DNG = "influenza", "covid-19", "varicela", "hpv4", "dengue"
+ACWY, DTPA, VSR = "acwy", "dtpa", "sincicial"
+TODAS = {HB, DT, VFA, SCR, VPC20, INF, COVID, VZ, HPV, DNG, ACWY, DTPA, VSR}
+
+
+@pytest.mark.parametrize("pergunta,esperadas", [
+    ("Quais vacinas um idoso deve tomar?", {HB, DT, VFA, SCR, VPC20, INF, COVID, VZ}),
+    ("Quais vacinas tomar aos 70 anos?", {HB, DT, VFA, SCR, VPC20, INF, COVID, VZ}),
+    ("Quais vacinas um adulto deve tomar?", {HB, DT, VFA, SCR, VPC20, VZ}),
+    ("Quais vacinas um adolescente deve tomar?", {HB, DT, VFA, SCR, VPC20, VZ, HPV, DNG, ACWY}),
 ])
-def test_lista_do_grupo_bate_com_o_calendario_oficial(buscar, pergunta, vacinas):
-    contexto = " ".join(x["trecho"] for x in buscar(pergunta)).lower()
-    for vacina in vacinas:
-        assert vacina in contexto, vacina
+def test_lista_do_grupo_bate_com_o_calendario_oficial(buscar, pergunta, esperadas):
+    # Compara só os títulos: é exata nos dois sentidos, não falta nem sobra vacina
+    titulos = " ".join(x["trecho"][:x["trecho"].index("]")] for x in buscar(pergunta)).lower()
+    assert {v for v in TODAS if v in titulos} == esperadas
 
 
-def test_gestante_nao_recebe_vacina_de_faixa_etaria(buscar):
-    contexto = " ".join(x["trecho"] for x in buscar("Quais vacinas a gestante deve tomar?")).lower()
-    for vacina in ("dtpa", "sincicial", "hepatite b", "influenza", "covid"):
-        assert vacina in contexto, vacina
-    assert "tríplice viral" not in contexto  # contraindicada na gravidez
+def test_gestante_bate_com_o_calendario_oficial(buscar):
+    resultados = buscar("Quais vacinas a gestante deve tomar?")
+    titulos = " ".join(x["trecho"][:x["trecho"].index("]")] for x in resultados).lower()
+    assert {v for v in TODAS if v in titulos} == {HB, VFA, INF, COVID, DTPA, VSR}
+    # Varicela e tríplice viral são contraindicadas na gestação
+    assert "varicela" not in titulos and "tríplice viral" not in titulos
+    # A dT está na seção da dTpa, junto do esquema da gestante
+    assert "2 doses de dt" in " ".join(x["trecho"] for x in resultados).lower()
+
+
+def test_crianca_traz_as_vacinas_do_calendario(buscar):
+    titulos = " ".join(x["trecho"][:x["trecho"].index("]")] for x in buscar("Quais vacinas uma criança deve tomar?")).lower()
+    for vacina in ("bcg", "hepatite b", "penta", "poliomielite", "rotavírus", "vpc 20", "vpc 10", "men c",
+                   "influenza", "covid-19", "febre amarela", "tríplice viral", "dtp", "varicela", "hepatite a"):
+        assert vacina in titulos, vacina
 
 
 def test_ubs_traz_horario_da_secretaria(buscar):
@@ -158,12 +175,12 @@ class _ClienteFalso:
         return type("Resp", (), {"text": "ok"})()
 
 
-def _gemini_com(monkeypatch, erros, reserva="modelo-teste", tentativas=3):
+def _gemini_com(monkeypatch, erros, reservas=(), tentativas=3):
     from google import genai
     cliente = _ClienteFalso(erros)
     monkeypatch.setattr(genai, "Client", lambda **kw: cliente)
     monkeypatch.setattr(rag.time, "sleep", lambda s: None)
-    return rag.criar_chamar_llm_gemini("chave-falsa", modelo="modelo-teste", reserva=reserva, tentativas=tentativas), cliente
+    return rag.criar_chamar_llm_gemini("chave-falsa", modelo="modelo-teste", reservas=list(reservas), tentativas=tentativas), cliente
 
 
 def test_gemini_retry_em_cota_estourada(monkeypatch):
@@ -176,14 +193,14 @@ def test_gemini_retry_em_cota_estourada(monkeypatch):
 def test_gemini_sobrecarregado_passa_para_a_reserva_na_hora(monkeypatch):
     # O que aconteceu de verdade: gemini-3.8-flash em 503 por excesso de demanda
     from google.genai import errors
-    chamar, cliente = _gemini_com(monkeypatch, [errors.APIError(503, {})], reserva="modelo-reserva")
+    chamar, cliente = _gemini_com(monkeypatch, [errors.APIError(503, {})], reservas=["modelo-reserva"])
     assert chamar("prompt") == "ok"
     assert cliente.usados == ["modelo-teste", "modelo-reserva"]
 
 
 def test_gemini_descontinuado_segue_na_reserva(monkeypatch):
     from google.genai import errors
-    chamar, cliente = _gemini_com(monkeypatch, [errors.APIError(404, {})], reserva="modelo-reserva")
+    chamar, cliente = _gemini_com(monkeypatch, [errors.APIError(404, {})], reservas=["modelo-reserva"])
     assert chamar("prompt") == "ok"
 
 
