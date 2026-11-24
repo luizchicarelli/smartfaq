@@ -92,6 +92,8 @@ class ResultadoRAG:
     #   "erro_geracao"           -> chamar_llm() lançou exceção
     origem_contexto: str  # "hibrido" | "semantico" | "nenhum"
     dentro_escopo: Optional[bool]  # True/False/None (None = indefinido) — espelha o formato que a Dupla 3 já usa no app.py
+    # Preenchida quando a busca falhou e o LLM reescreveu a pergunta: a tela mostra como ela foi entendida
+    pergunta_reformulada: Optional[str] = None
 
 
 # ============================================================
@@ -407,11 +409,34 @@ MENSAGEM_ERRO_BUSCA = (
 MENSAGEM_PERGUNTA_VAZIA = "Digite uma pergunta antes de enviar."
 
 
+PROMPT_REFORMULAR = """Reescreva a pergunta abaixo, enviada a um assistente de UBS e postos de saúde
+de Marília-SP, em português formal e claro: corrija erros de digitação e expanda
+abreviações e gírias. Não acrescente informação e não responda à pergunta.
+Devolva só a pergunta reescrita, em uma linha.
+
+Pergunta: {pergunta}"""
+
+
+def reformular_pergunta(pergunta: str, chamar_llm: Callable[[str], str]) -> Optional[str]:
+    """Reserva para quando o dicionário e as regras da busca não deram conta. None se falhar ou não mudar nada."""
+    try:
+        texto = chamar_llm(PROMPT_REFORMULAR.format(pergunta=pergunta))
+    except Exception as erro:
+        print(f"[llm] Falha ao reformular: {type(erro).__name__}")
+        return None
+    linhas = (texto or "").strip().splitlines()
+    reformulada = linhas[0].strip().strip('"“”*').strip()[:300] if linhas else ""
+    if not reformulada or reformulada.lower() == pergunta.lower():
+        return None
+    return reformulada
+
+
 def responder_assistente(
     pergunta: str,
     buscar_fn: Callable[..., list],
     chamar_llm: Callable[[str], str],
     k: int = 3,
+    reformular: Optional[Callable[[str], str]] = None,
 ) -> ResultadoRAG:
     """
     Função principal do assistente (D13). Encadeia:
@@ -456,7 +481,22 @@ def responder_assistente(
             dentro_escopo=None,
         )
 
-    return gerar_resposta(pergunta_normalizada, resultados_busca, chamar_llm)
+    if reformular is None or contexto_e_suficiente(resultados_busca):
+        return gerar_resposta(pergunta_normalizada, resultados_busca, chamar_llm)
+
+    # Reserva: só aqui, quando nada achou evidência, gasta uma chamada para reescrever a pergunta
+    reformulada = reformular_pergunta(pergunta_normalizada, reformular)
+    if not reformulada:
+        return gerar_resposta(pergunta_normalizada, resultados_busca, chamar_llm)
+    if guardrail_pre(reformulada):
+        return ResultadoRAG(MENSAGEM_FORA_ESCOPO, [], "fora_escopo", "nenhum", False, reformulada)
+    try:
+        resultados_busca = buscar_fn(reformulada, k=k)
+    except Exception:
+        return ResultadoRAG(MENSAGEM_ERRO_BUSCA, [], "erro_busca", "nenhum", None, reformulada)
+    resultado = gerar_resposta(f"{pergunta_normalizada} (entendida como: {reformulada})", resultados_busca, chamar_llm)
+    resultado.pergunta_reformulada = reformulada
+    return resultado
 
 
 # ============================================================

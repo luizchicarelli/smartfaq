@@ -109,3 +109,41 @@ if __name__ == "__main__":
         teste()
         print(f"OK: {teste.__name__}")
     print(f"\nTodos os {len(testes)} testes passaram.")
+
+
+def _reformulador(texto):
+    chamadas = []
+
+    def reformular(prompt):
+        chamadas.append(prompt)
+        return texto
+    return reformular, chamadas
+
+
+def test_reformulacao_so_quando_a_busca_falha():
+    reformular, chamadas = _reformulador("Quais vacinas a gestante deve tomar?")
+    r = rag.responder_assistente("quais vacinas pra gestante", _buscar_mock, rag.criar_chamar_llm_mock(), reformular=reformular)
+    assert r.status == "respondida" and r.pergunta_reformulada is None
+    assert chamadas == []  # a busca já achou: não gasta chamada
+
+
+def test_reformulacao_salva_a_pergunta_e_aparece_no_resultado():
+    reformular, chamadas = _reformulador("Quais vacinas a gestante deve tomar?\n")
+    r = rag.responder_assistente("q vcna eu tomo esperando nenem", _buscar_mock, rag.criar_chamar_llm_mock(), reformular=reformular)
+    assert len(chamadas) == 1
+    assert r.status == "respondida"
+    assert r.pergunta_reformulada == "Quais vacinas a gestante deve tomar?"
+
+
+def test_reformulacao_tambem_passa_pelo_guardrail():
+    reformular, _ = _reformulador("Qual remédio tomar para febre?")
+    r = rag.responder_assistente("oq tomo pra isso", _buscar_mock, rag.criar_chamar_llm_mock(), reformular=reformular)
+    assert r.status == "fora_escopo"
+    assert r.pergunta_reformulada == "Qual remédio tomar para febre?"
+
+
+def test_reformulacao_que_falha_fica_sem_evidencia():
+    def quebrado(prompt):
+        raise RuntimeError("cota")
+    r = rag.responder_assistente("vacina de tuberculose", _buscar_mock, rag.criar_chamar_llm_mock(), reformular=quebrado)
+    assert r.status == "sem_evidencia" and r.pergunta_reformulada is None
