@@ -1,6 +1,6 @@
 # Pendências do SmartFAQ
 
-Última atualização: 04/11/2026. Marque `[x]` quando resolver.
+Última atualização: 24/11/2026. Marque `[x]` quando resolver.
 
 ## Para o grupo verificar
 
@@ -38,6 +38,16 @@
   (a plataforma estava sem incidentes). Tenham prints ou um vídeo como plano B.
 
 ## Limitações conhecidas
+
+- [ ] **O gov.br bloqueia o GitHub Actions:** as 3 fontes do Ministério (Instrução
+  Normativa e as duas páginas sobre vacinação) só atualizam quando o job roda do
+  computador. No GitHub, a falha vira aviso amarelo por até 30 dias sem coleta boa;
+  depois o job fica vermelho. **O que fazer:** uma vez por mês, rodar
+  `python atualizar_dados.py` na raiz do projeto, com o `secrets.toml` configurado.
+
+- [ ] **Gemini lento quando sobrecarregado:** em 24/11/2026 os dois primeiros modelos
+  respondiam 503/504 e a resposta levava de 20 a 40 s. Na apresentação, abrir o app e
+  fazer uma pergunta antes, para conferir o tempo.
 
 - [ ] **Agendamento do GitHub Actions:** o GitHub desliga o agendamento depois de 60 dias
   sem atividade no repositório, e avisa por e-mail. Basta reativar na aba *Actions*.

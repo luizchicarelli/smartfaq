@@ -50,7 +50,13 @@ Todos os serviços estão no plano gratuito.
 ## Como uma pergunta é respondida
 
 ```
-Pergunta do usuário
+Pergunta do usuário ("to gravida qual vacina tomo")
+      │
+      ▼
+┌────────────────────────┐
+│ interpretar()          │  gíria, abreviação e erro de digitação → termos da base
+│ (pipeline_dados.py)    │  ("gravida" → gestante, "vasina" → vacina, "postinho" → posto)
+└────────────────────────┘
       │
       ▼
 ┌────────────────────────┐
@@ -63,13 +69,17 @@ Pergunta do usuário
 │ buscar()               │  busca híbrida:
 │ (pipeline_dados.py)    │   1) cita uma unidade pelo nome? → tabela unidades
 │                        │   2) cita idade ou grupo? → todas as vacinas que batem
-│                        │   3) senão → busca semântica (pgvector)
+│                        │   3) cita uma vacina? → busca semântica só na seção dela
+│                        │   4) senão → busca semântica (pgvector)
 └────────────────────────┘
       │
       ▼
 ┌────────────────────────┐
-│ contexto suficiente?   │─── não ──► "não encontrei" + UBS, Secretaria e Disque Saúde 136
-└────────────────────────┘
+│ contexto suficiente?   │─── não ──► reserva: o Gemini reescreve a pergunta em português
+└────────────────────────┘            formal, ela passa de novo pelo guardrail e pela busca.
+      │ sim                           A tela mostra "Reformulei sua pergunta: ...".
+      │                               Se ainda não achar: "não encontrei" + UBS,
+      │                               Secretaria e Disque Saúde 136
       │ sim
       ▼
 ┌────────────────────────┐
@@ -120,6 +130,12 @@ disparar à mão em *Actions > Atualizar dados > Run workflow*. Em cada fonte, o
 vermelho. O mesmo vale para conteúdo suspeito, como PDF sem texto ou página que
 mudou de layout. O acesso diário também evita a pausa do Supabase por inatividade.
 
+**O gov.br recusa a conexão dos servidores do GitHub** (desde nov/2026, provavelmente
+por bloquear acesso de fora do Brasil). Falha de conexão vira só aviso enquanto a
+última coleta boa tiver menos de 30 dias (`DIAS_SEM_COLETA`); depois disso o job fica
+vermelho. É o lembrete para rodar `python atualizar_dados.py` do computador, que
+atualiza as 3 fontes do Ministério.
+
 ## Banco de dados
 
 | Tabela | Conteúdo |
@@ -157,14 +173,17 @@ banco_dados.py          conexão com o Supabase
 atualizar_dados.py      job de ingestão (hash, reindexação, log)
 requirements.txt        dependências
 PENDENCIAS.md           o que falta verificar e limitações conhecidas
+.streamlit/config.toml  tema (cor verde); o secrets.toml fica fora do git
 .github/workflows/      atualização diária dos dados
 sql/                    esquema do banco, carga inicial e aplicar.py
 testes/
   test_rag.py               guardrails e geração de resposta (sem rede)
   test_pipeline_dados.py    extração e lógica de busca (sem rede)
   test_casos_demo.py        casos da demonstração contra o banco real
+  test_linguagem_natural.py perguntas informais: o contexto certo chega ao LLM?
   test_atualizar_dados.py   job de ingestão (transação desfeita no fim)
   fixtures/                 PDF usado no teste de extração
+  avaliar.py                script manual: avaliação com as 60 perguntas e as informais
   medir_desempenho.py       script manual: tempo de cada etapa
   calibrar_limiar.py        script manual: distâncias para calibrar o limiar
   testar_gemini.py          script manual: testa a chave e a inicialização
@@ -252,8 +271,34 @@ branco: recarregue com F5. A causa não foi confirmada.
 python -m pytest testes/ -v
 ```
 
-São 56 testes. `test_rag.py` e `test_pipeline_dados.py` não usam rede. Os outros
-dois usam o Supabase (são pulados sem `DATABASE_URL`) e não deixam nada gravado.
+São 102 testes. `test_rag.py` e `test_pipeline_dados.py` não usam rede. Os outros
+usam o Supabase (são pulados sem `DATABASE_URL`) e não deixam nada gravado.
+
+## Avaliação
+
+`python testes/avaliar.py` roda as perguntas com o LLM simulado (não gasta cota do
+Gemini). Resultado em 24/11/2026:
+
+| Conjunto | Resultado |
+|---|---|
+| 30 perguntas fora do escopo (sintoma, remédio, conduta médica, fora do tema) | **30/30 recusadas** |
+| 30 perguntas dentro do escopo | **20/30 respondidas**; as outras 10 são de agendamento, horários genéricos e documentos para consulta/exame, que nenhuma fonte oficial de Marília publica: o assistente diz que não encontrou e indica a quem ligar |
+| 27 perguntas informais ("meu bb tem 2 mes q vacina ele toma", "endereço postinho joquei") | **27/27 com o contexto certo**; antes do `interpretar()` eram 14 de 26 |
+
+Todas as perguntas de vacinação dentro do escopo foram respondidas, e a de gestante
+não traz mais varicela (contraindicada na gravidez), o que acontecia com "to gravida".
+
+## A interface
+
+- **Abertura:** o que é o SmartFAQ e de onde vêm os dados, em 3 cartões.
+- **Perguntas sugeridas** e **filtro por assunto** (Vacinas, Unidades e horários).
+- **Perguntas frequentes** em drop-down abaixo do campo. A resposta vem do RAG no
+  clique e fica no cache em memória. As listas `SUGESTOES` e `FAQ` ficam em `app.py`
+  e são escolhidas pelo grupo: nada do que as pessoas digitam é guardado (LGPD).
+- **"Reformulei sua pergunta: ..."** aparece quando o Gemini precisou reescrever a
+  pergunta, para conferir se ela foi entendida direito.
+- **Aviso de privacidade** abaixo do campo e **crédito da Secretaria** na coluna de
+  horário da tabela de unidades.
 
 ## Parâmetros atuais
 
@@ -328,6 +373,13 @@ uma instalação nova pode trazer versões mais recentes.
 - **Streamlit com versão fixa (`1.50.0`):** no app publicado, a 1.66 falhou nas 3 cargas
   de teste e a 1.50 carregou nas 3. A causa não foi confirmada; teste no app publicado
   antes de subir a versão.
+- **Linguagem do dia a dia em 3 camadas:** (1) `interpretar()` troca gíria e
+  abreviação pelos termos da base (`SINONIMOS`) e corrige erro de digitação perto do
+  vocabulário do domínio (`VOCABULARIO`, com `difflib`); (2) as regras da busca são
+  tolerantes (vacina no singular, nome da unidade palavra a palavra); (3) só quando
+  nada achou evidência, o Gemini reescreve a pergunta (1 chamada a mais). O LLM
+  continua recebendo a pergunta original. As duas primeiras camadas são grátis e
+  testáveis; a terceira cobre o que ninguém previu.
 - **Guardrails em duas camadas:** `guardrail_pre` (palavras-chave, antes do LLM) e
   `guardrail_pos` (padrões de risco clínico, depois). Nenhuma das duas sozinha é 100%
   confiável.
@@ -345,6 +397,10 @@ uma instalação nova pode trazer versões mais recentes.
 - **E-mails:** a maioria das unidades não tem e-mail no CNES, e os genéricos (repetidos
   em várias unidades) não são mostrados.
 - **"Atualizado em"** é a data em que o job detectou a mudança na fonte.
+- **Gemini sobrecarregado:** em 24/11/2026 os dois primeiros modelos respondiam
+  503/504 e a resposta levava de 20 a 40 s até o modelo reserva responder.
+- **Tema:** o app usa o tema claro fixo, com a cor verde. No Streamlit 1.50, definir uma
+  cor desliga o modo escuro automático.
 - **Agendamento do job:** o GitHub desliga o agendamento depois de 60 dias sem atividade
   no repositório, e avisa por e-mail. Basta reativar na aba *Actions*.
 
