@@ -11,7 +11,7 @@ import streamlit as st
 # ============================================================
 
 st.set_page_config(
-    page_title="FAQ Inteligente - UBS",
+    page_title="SmartFAQ — UBS de Marília",
     page_icon="🏥",
     layout="centered",
 )
@@ -206,26 +206,33 @@ def _respostas_recentes() -> dict:
     return {}
 
 
+def _chave_cache(pergunta_usuario: str) -> str:
+    return " ".join(pergunta_usuario.lower().split())
+
+
 def responder_via_rag(pergunta_usuario: str, nucleo_rag) -> tuple:
     """
     Chama o núcleo RAG real e converte o `ResultadoRAG` pro mesmo formato
     de tupla que `responder()` já devolve, pra não precisar mudar nada
-    na parte da interface que consome o resultado.
+    na parte da interface que consome o resultado. O último item é a
+    pergunta reformulada pelo LLM (None quando a busca achou de primeira).
     """
     # A cota gratuita do Gemini é pequena: pergunta repetida não gasta outra chamada.
     # Só em memória, nada vai para disco nem para o banco (LGPD).
     cache = _respostas_recentes()
-    chave = " ".join(pergunta_usuario.lower().split())
+    chave = _chave_cache(pergunta_usuario)
     if chave in cache:
         return cache[chave]
 
     buscar_fn, responder_assistente_fn, chamar_llm = nucleo_rag
-    resultado = responder_assistente_fn(pergunta_usuario, buscar_fn, chamar_llm)
+    # O mesmo LLM reformula a pergunta, só quando a busca não acha nada
+    resultado = responder_assistente_fn(pergunta_usuario, buscar_fn, chamar_llm, reformular=chamar_llm)
     resposta = (
         resultado.resposta,
         f"RAG ({resultado.status} / {resultado.origem_contexto})",
         resultado.dentro_escopo,
         "rag",
+        resultado.pergunta_reformulada,
     )
     if resultado.status == "respondida":  # erro passageiro não pode ficar guardado
         if len(cache) >= 500:
@@ -398,7 +405,8 @@ def responder(
             linha["resposta_esperada"],
             linha["categoria"],
             bool(linha["dentro_escopo"]),
-            "banco fixo"
+            "banco fixo",
+            None,
         )
 
     # 3) Sem RAG disponível (ainda não configurado): fallback pro
@@ -413,7 +421,8 @@ def responder(
             MENSAGEM_FORA_ESCOPO_PADRAO,
             "Fora do escopo (detectado por palavra-chave)",
             False,
-            "classificador"
+            "classificador",
+            None,
         )
 
     if escopo == "dentro":
@@ -422,246 +431,207 @@ def responder(
             MENSAGEM_SEM_CORRESPONDENCIA,
             "Possivelmente dentro do escopo",
             True,
-            "classificador"
+            "classificador",
+            None,
         )
 
     return (
         MENSAGEM_SEM_CORRESPONDENCIA,
         "Indefinido",
         None,
-        "classificador"
+        "classificador",
+        None,
     )
 
 
 # ============================================================
-# INTERFACE
+# CONTEÚDO DA TELA (o grupo pode editar estas listas)
 # ============================================================
+# Escolhidas pelo grupo, e não montadas com o que as pessoas perguntam:
+# nada do que é digitado fica guardado (LGPD).
 
-st.title(
-    "🏥 FAQ Inteligente — UBS e Postos de Saúde"
-)
+ASSUNTOS = ["Todos", "Vacinas", "Unidades e horários"]
 
-st.caption(
-    "Projeto acadêmico · Bacharelado em "
-    "Inteligência Artificial · Universidade de Marília"
-)
+SUGESTOES = [
+    ("Vacinas", "Quais vacinas meu bebê de 2 meses toma?"),
+    ("Vacinas", "Estou grávida, quais vacinas devo tomar?"),
+    ("Unidades e horários", "Que horas abre o postinho do Alto Cafezal?"),
+    ("Unidades e horários", "Telefone da USF Toffoli"),
+]
+
+FAQ = [
+    ("Vacinas", "Quais vacinas um idoso deve tomar?"),
+    ("Vacinas", "Para quem é indicada a vacina da dengue?"),
+    ("Vacinas", "Quem pode tomar a vacina do HPV?"),
+    ("Vacinas", "Preciso levar algum documento para tomar vacina?"),
+    ("Vacinas", "Onde posso me vacinar?"),
+    ("Unidades e horários", "Onde fica o posto Jóquei Clube?"),
+    ("Unidades e horários", "Qual o horário de atendimento das UBS de Marília?"),
+    ("Unidades e horários", "A UBS funciona aos domingos?"),
+]
+
+AVISO_PRIVACIDADE = "🔒 Não digite nome, CPF ou dados de saúde. As perguntas não são armazenadas."
+
+
+def _do_assunto(itens: list, assunto) -> list:
+    return [pergunta for tema, pergunta in itens if assunto in (None, "Todos", tema)]
+
+
+def mostrar_resposta(resposta, dentro_escopo, reformulada) -> None:
+    if reformulada:
+        # Feedback de como a pergunta foi entendida quando o Gemini precisou reescrevê-la
+        st.info(f"🔄 **Reformulei sua pergunta:** {reformulada}")
+    if dentro_escopo is False:
+        st.warning(resposta)
+    else:
+        st.success(resposta)
+
+
+def mostrar_unidades(unidades, chave: str) -> None:
+    if unidades is None:
+        st.warning("Não foi possível carregar as informações das UBS.")
+        st.info("Tente novamente em instantes ou ligue para o Disque Saúde 136.")
+        return
+
+    busca_unidade = st.text_input("🔎 Filtrar por nome, bairro ou endereço:", key=chave)
+    if busca_unidade.strip():
+        texto_busca = busca_unidade.lower().strip()
+        filtro = unidades.apply(
+            lambda linha: texto_busca in " ".join(str(valor).lower() for valor in linha.values),
+            axis=1,
+        )
+        unidades = unidades[filtro]
+
+    if len(unidades) == 0:
+        st.warning("Nenhuma UBS encontrada para essa busca.")
+        return
+    st.dataframe(unidades, width="stretch", hide_index=True)
+    st.caption(
+        f"{len(unidades)} unidade(s). Endereço, telefone, e-mail e atendimento: CNES, cadastro "
+        "nacional do Ministério da Saúde. Horário: página da Secretaria Municipal da Saúde de "
+        "Marília (saude.marilia.sp.gov.br)."
+    )
+
+
+def _usar_sugestao() -> None:
+    escolha = st.session_state.get("sugestao")
+    if escolha:
+        st.session_state["pergunta"] = escolha
+        st.session_state["enviar_sugestao"] = True
+    st.session_state["sugestao"] = None
+
+
+# ============================================================
+# ABERTURA
+# ============================================================
 
 nucleo_rag = carregar_nucleo_rag()
 
-if nucleo_rag is not None:
-    st.write(
-        "Tire dúvidas sobre **vacinação, documentos, "
-        "agendamento e horários de atendimento**, com base nos "
-        "documentos oficiais carregados via RAG."
-    )
-    st.sidebar.success("🟢 Núcleo RAG ativo — respostas geradas a partir da base oficial.")
-else:
-    st.write(
-        "Tire dúvidas sobre **vacinação, documentos, "
-        "agendamento e horários de atendimento**. "
-        "Este protótipo usa respostas fixas — a versão final "
-        "buscará as respostas em documentos oficiais via RAG."
-    )
-    st.sidebar.info(
-        "🟡 Modo protótipo (respostas fixas). O núcleo RAG ainda não "
-        "está configurado nesta pasta (faltam `pipeline_dados.py`/`rag.py` "
-        "e/ou a chave de API do LLM)."
-    )
+st.title("🏥 SmartFAQ — UBS de Marília")
+st.markdown(
+    "Tire dúvidas sobre **vacinas, endereços, telefones e horários** das UBS e USF de "
+    "Marília/SP. Pode escrever do seu jeito: as respostas vêm de fontes oficiais, com o "
+    "link e a data de atualização."
+)
+
+CARTOES = [
+    ("💉 Vacinas", "Calendário Nacional de Vacinação 2026, do Ministério da Saúde."),
+    ("📍 Unidades", "Endereço e telefone das UBS e USF, do cadastro nacional (CNES)."),
+    ("🕒 Horários", "Horário de atendimento publicado pela Secretaria da Saúde de Marília."),
+]
+for coluna, (titulo, texto) in zip(st.columns(3), CARTOES):
+    with coluna.container(border=True):
+        st.markdown(f"**{titulo}**")
+        st.caption(texto)
 
 
 # ============================================================
-# CARREGAR OS DADOS
+# PERGUNTA
 # ============================================================
 
-banco = carregar_banco()
+assunto = st.segmented_control("Assunto", ASSUNTOS, default="Todos", key="assunto")
 
-unidades = carregar_unidades()
-
-
-# ============================================================
-# FORMULÁRIO DE PERGUNTA
-# ============================================================
+st.pills("Perguntas sugeridas", _do_assunto(SUGESTOES, assunto), key="sugestao", on_change=_usar_sugestao)
 
 with st.form("form_pergunta"):
-
     pergunta_usuario = st.text_input(
         label="Digite sua pergunta:",
-        placeholder=(
-            'Ex.: "Qual o endereço da UBS?"'
-        )
+        placeholder='Ex.: "que horas abre o postinho do jk?"',
+        key="pergunta",
     )
+    enviar = st.form_submit_button("Perguntar", type="primary")
+st.caption(AVISO_PRIVACIDADE)
 
-    enviar = st.form_submit_button(
-        "Perguntar"
-    )
-
-
-# ============================================================
-# PROCESSAR PERGUNTA
-# ============================================================
+enviar = enviar or st.session_state.pop("enviar_sugestao", False)
 
 if enviar and pergunta_usuario.strip():
-
     inicio = time.perf_counter()
     with st.spinner("Buscando nos documentos oficiais..."):
-        resposta, categoria, dentro_escopo, origem = responder(
-            pergunta_usuario,
-            banco,
-            nucleo_rag,
+        resposta, categoria, dentro_escopo, origem, reformulada = responder(
+            pergunta_usuario, carregar_banco(), nucleo_rag
         )
     # Só o tempo e a origem vão pro log — nunca o texto da pergunta (LGPD)
     print(f"[tempo] resposta em {time.perf_counter() - inicio:.2f}s ({origem}: {categoria})")
 
     st.markdown("### Resposta")
+    mostrar_resposta(resposta, dentro_escopo, reformulada)
 
-    if dentro_escopo is False:
-
-        st.warning(resposta)
-
-    else:
-
-        st.success(resposta)
-
-
-    # ========================================================
-    # MOSTRAR TABELA SOMENTE SE FOR PERGUNTA SOBRE UBS
-    # ========================================================
-
-    if pergunta_pede_dados_da_unidade(
-        pergunta_usuario
-    ):
-
-        if unidades is not None:
-
-            st.divider()
-
-            st.markdown(
-                "### 🏥 Informações das UBS"
-            )
-
-            st.write(
-                "As informações abaixo vêm do CNES, o cadastro "
-                "nacional de estabelecimentos de saúde."
-            )
-
-
-            # =================================================
-            # CAMPO DE PESQUISA
-            # =================================================
-
-            busca_unidade = st.text_input(
-                "🔎 Filtrar por nome, bairro ou endereço:",
-                key="busca_unidade"
-            )
-
-
-            # =================================================
-            # FILTRAR UBS
-            # =================================================
-
-            if busca_unidade.strip():
-
-                texto_busca = (
-                    busca_unidade
-                    .lower()
-                    .strip()
-                )
-
-                filtro = unidades.apply(
-                    lambda linha:
-                        texto_busca in " ".join(
-                            str(valor).lower()
-                            for valor in linha.values
-                        ),
-                    axis=1
-                )
-
-                unidades_filtradas = unidades[
-                    filtro
-                ]
-
-            else:
-
-                unidades_filtradas = unidades
-
-
-            # =================================================
-            # MOSTRAR TABELA
-            # =================================================
-
-            if len(unidades_filtradas) > 0:
-
-                st.dataframe(
-                    unidades_filtradas,
-                    width="stretch",
-                    hide_index=True
-                )
-
-                st.caption(
-                    f"{len(unidades_filtradas)} "
-                    f"unidade(s) encontrada(s)."
-                )
-
-            else:
-
-                st.warning(
-                    "Nenhuma UBS encontrada para essa busca."
-                )
-
-        else:
-
-            st.warning(
-                "Não foi possível carregar as informações "
-                "das UBS."
-            )
-
-            st.info(
-                "Tente novamente em instantes ou ligue para o "
-                "Disque Saúde 136."
-            )
-
-
-# ============================================================
-# CASO O USUÁRIO CLIQUE SEM DIGITAR
-# ============================================================
+    if pergunta_pede_dados_da_unidade(pergunta_usuario):
+        st.markdown("#### 🏥 Unidades de saúde de Marília")
+        mostrar_unidades(carregar_unidades(), "busca_unidade_resposta")
 
 elif enviar:
+    st.info("Digite uma pergunta antes de enviar.")
 
-    st.info(
-        "Digite uma pergunta antes de enviar."
+
+# ============================================================
+# PERGUNTAS FREQUENTES
+# ============================================================
+
+st.markdown("### Perguntas frequentes")
+for i, pergunta_faq in enumerate(_do_assunto(FAQ, assunto)):
+    with st.expander(pergunta_faq):
+        # Resposta só no clique: cada pergunta gasta no máximo 1 chamada ao Gemini por processo
+        pronta = _respostas_recentes().get(_chave_cache(pergunta_faq))
+        if pronta is None:
+            botao = st.empty()
+            if botao.button("Ver resposta", key=f"faq_{i}"):
+                botao.empty()
+                with st.spinner("Buscando nos documentos oficiais..."):
+                    pronta = responder(pergunta_faq, carregar_banco(), nucleo_rag)
+        if pronta is not None:
+            mostrar_resposta(pronta[0], pronta[2], pronta[4])
+
+if assunto in (None, "Todos", "Unidades e horários"):
+    with st.expander("📋 Ver todas as unidades de saúde"):
+        mostrar_unidades(carregar_unidades(), "busca_unidade_lista")
+
+
+# ============================================================
+# BARRA LATERAL E AVISO FINAL
+# ============================================================
+
+with st.sidebar:
+    st.markdown("### Sobre")
+    st.write(
+        "Projeto acadêmico do Bacharelado em Inteligência Artificial da Universidade "
+        "de Marília (UNIMAR), disciplina Fábrica de Projetos Ágeis."
     )
-
-
-# ============================================================
-# BANCO COMPLETO DE PERGUNTAS
-# ============================================================
-
-with st.expander(
-    "📚 Ver banco completo de perguntas de teste"
-):
-
-    st.dataframe(
-        banco[
-            [
-                "id",
-                "pergunta",
-                "categoria",
-                "dentro_escopo",
-            ]
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-
-
-# ============================================================
-# AVISO FINAL
-# ============================================================
+    if nucleo_rag is not None:
+        st.success("🟢 Núcleo RAG ativo: respostas geradas a partir da base oficial.")
+    else:
+        st.info("🟡 Modo protótipo (respostas fixas): falta a chave de API do LLM ou a conexão com o banco.")
+    with st.expander("📚 Banco de perguntas de teste"):
+        st.dataframe(
+            carregar_banco()[["id", "pergunta", "categoria", "dentro_escopo"]],
+            width="stretch",
+            hide_index=True,
+        )
 
 st.divider()
-
 st.caption(
-    "⚠️ O assistente NÃO faz diagnóstico, "
-    "NÃO recomenda medicamentos e NÃO substitui "
-    "o profissional de saúde."
+    "⚠️ O assistente NÃO faz diagnóstico, NÃO recomenda medicamentos e NÃO substitui "
+    "o profissional de saúde. Em emergência, ligue 192 (SAMU)."
 )
+
+

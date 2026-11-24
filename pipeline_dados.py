@@ -308,7 +308,7 @@ PALAVRAS_SEM_NOME = {
   "fica", "abre", "fecha", "qual", "quais", "que", "horas", "esta", "estou", "funciona", "contato", "email",
   "vacina", "vacinas", "aberto", "hoje", "amanha", "perto", "numero", "tambem", "para", "ainda",
   "domingo", "domingos", "sabado", "sabados", "feriado", "feriados", "documento", "documentos", "levar",
-  "precisa", "atendimento", "atende", "medico", "consulta", "agendar", "marcar", "bairro",
+  "precisa", "atendimento", "atende", "medico", "consulta", "agendar", "marcar", "bairro", "marilia",
 }
 
 def _nome_base_unidade(nome: str) -> str:

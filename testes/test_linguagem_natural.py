@@ -61,6 +61,7 @@ INFORMAIS = [
     ("postinho bandeirantes fone", "bandeirantes", None),
     ("posto do cavalari telefone", "cavalari", None),
     ("horario do psf alto cafezal", "alto cafezal", None),
+    ("qual o horario das ubs de marilia", "horario de funcionamento", "nova marilia"),
     # Ministério
     ("precisa levar algo pra vacina", "cartao", None),
     ("perdi a carteirinha de vacina e agora", "cartao", None),

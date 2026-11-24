@@ -1,0 +1,6 @@
+# Verde-saúde no lugar do vermelho padrão (vermelho parece erro num app de saúde).
+# No Streamlit 1.50, definir uma cor fixa o tema claro: o app não segue o modo
+# escuro do navegador. [theme.light]/[theme.dark] ainda não funcionam nesta versão.
+[theme]
+base = "light"
+primaryColor = "#0F7B5F"
