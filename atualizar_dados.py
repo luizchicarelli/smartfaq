@@ -170,10 +170,14 @@ def casar_horarios(unidades: list, pagina: list) -> dict:
 
 
 def texto_de_pagina(corpo: str) -> str:
-    # gov.br: o conteúdo fica entre id="content" e o rodapé
+    # gov.br: o conteúdo fica entre id="content" e o que vem abaixo dele. Antes procurava
+    # id="footer", que o gov.br não tem (é portal-footer): entrava o menu inteiro do site
     inicio = corpo.find('id="content"')
-    fim = corpo.find('id="footer"', inicio)
-    texto = _texto_html(corpo[inicio:fim] if inicio != -1 and fim != -1 else corpo)
+    fim = next((f for f in (corpo.find(m, inicio) for m in ('id="viewlet-below-content"', 'id="portal-footer"'))
+                if f != -1), -1) if inicio != -1 else -1
+    if inicio == -1 or fim == -1:
+        raise ValueError("Página sem id=content: layout mudou")
+    texto = _texto_html(corpo[corpo.find(">", inicio) + 1:corpo.rfind("<", 0, fim)])
     if len(texto) < MINIMO_CARACTERES_PAGINA:
         raise ValueError(f"Página com só {len(texto)} caracteres: layout mudou")
     return texto

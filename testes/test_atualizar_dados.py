@@ -183,3 +183,14 @@ def test_pdf_sem_texto_e_recusado():
     escritor.write(saida)
     with pytest.raises(ValueError, match="caracteres"):
         job.texto_do_pdf(saida.getvalue())
+
+
+def test_pagina_do_gov_sem_menu_nem_rodape():
+    corpo = ('<html><nav>Ir para o menu de Navegação Licitações Concursos</nav><main id="main-content">'
+             '<div id="content"><h1>O que é preciso?</h1><p>' + "Basta comparecer com o cartão de vacinação. " * 10 +
+             '</p></div><div id="viewlet-below-content">Compartilhe</div></main><footer id="portal-footer">Redes sociais</footer>')
+    texto = job.texto_de_pagina(corpo)
+    assert texto.startswith("O que é preciso?")
+    assert "menu" not in texto and "Compartilhe" not in texto and "Redes" not in texto
+    with pytest.raises(ValueError, match="layout"):
+        job.texto_de_pagina("<html>sem conteúdo</html>")
