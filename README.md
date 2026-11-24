@@ -413,11 +413,11 @@ Disciplina: Fábrica de Projetos Ágeis (4º Termo)
 
 Duplas:
 ### Dados e base de conhecimento:
-- Enzo 
-- Gabriel Marques
+- Enzo Luiz Tsutsumi de Almeida José — RA 2027602
+- Gabriel Marques Figueiredo — RA 2028683
 ### Núcleo de IA (RAG):
-- Luiz Henrique Soares Chicarelli de Andrade
-- Gabriel Almeida
+- Luiz Henrique Soares Chicareli de Andrade — RA 2035693
+- Gabriel Almeida Ermenegildo — RA 2028344
 ### Interface, testes e documentação:
-- Felipe
-- Estivo
+- Felipe Augusto Santos Dorta de Oliveira — RA 2052799
+- Felipe Estevo Freitas — RA 1990153
