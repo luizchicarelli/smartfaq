@@ -166,6 +166,41 @@ def _normalizar(texto: str) -> str:
   texto = "".join(c for c in texto if not unicodedata.combining(c))
   return re.sub(r"[\"'“”‘’]", " ", texto)
 
+# Jeito de falar -> termo que a base usa. Roda no texto já normalizado (minúsculo, sem acento)
+SINONIMOS = [
+  (r'\b(?:gravid[ao]s?|gravidez|gestacao)\b|\b(?:to|estou) esperando\b', 'gestante'),
+  (r'\b(minha|meu|da|do|sua|seu|pra|para) vo\b', r'\1 idoso'),  # "vo" sozinho também é "vou"
+  (r'\b(?:vov[oa]s?|avo|avos|velhinh\w*|terceira idade|melhor idade)\b', 'idoso'),
+  (r'\b(?:bb|bebe|bebes|nene|nenem|recem[ -]nascid\w*)\b', 'crianca'),
+  (r'\b(?:postinho|psf|postos? de saude)\b', 'posto'),
+  (r'\bcatapora\b', 'varicela'),
+  (r'\bq\b', 'que'), (r'\bqq\b', 'qualquer'), (r'\bpq\b', 'porque'), (r'\bvc\b', 'voce'),
+  (r'\btbm?\b', 'tambem'), (r'\bhj\b', 'hoje'), (r'\bqts?\b', 'quantas'), (r'\boq\b', 'o que'),
+  (r'\bpra\b', 'para'), (r'\bto\b', 'estou'), (r'\bta\b', 'esta'),
+]
+
+# Palavras do domínio: erro de digitação perto delas é corrigido ("vasina" -> "vacina")
+VOCABULARIO = {
+  "vacina", "vacinas", "vacinacao", "gripe", "influenza", "dengue", "sarampo", "caxumba", "rubeola",
+  "tetano", "hepatite", "febre", "amarela", "poliomielite", "rotavirus", "pneumococica", "meningococica",
+  "varicela", "covid", "horario", "endereco", "telefone", "gestante", "crianca", "idoso", "adolescente",
+  "adulto", "unidade", "carteirinha", "cartao", "caderneta", "documento", "domingo", "sabado",
+}
+
+def interpretar(pergunta: str) -> str:
+  #Traduz abreviação, gíria e erro de digitação para os termos da base; o LLM continua vendo a pergunta original
+  texto = re.sub(r'\s+', ' ', _normalizar(pergunta)).strip()
+  for padrao, termo in SINONIMOS:
+    texto = re.sub(padrao, termo, texto)
+
+  def corrigir(m):
+    palavra = m.group(0)
+    if len(palavra) < 4 or palavra in VOCABULARIO:
+      return palavra
+    parecida = difflib.get_close_matches(palavra, VOCABULARIO, n=1, cutoff=0.8)
+    return parecida[0] if parecida else palavra
+  return re.sub(r'[a-z]+', corrigir, texto)
+
 def _extrair_nome_ubs(pergunta: str):
   #Detecta o nome de uma UBS/USF citada na pergunta pra devolver só o bloco daquela unidade
   #Tolera repetição ("UBS UBS ALTO CAFEZAL"), aspas e acentos; devolve o nome normalizado
@@ -192,11 +227,22 @@ def texto_da_unidade(unidade: dict, municipio: str = "") -> str:
 FAIXAS_GRUPOS = {"idoso": (60, 130), "adulto": (25, 59), "adolescente": (10, 24), "crianca": (0, 9)}
 PADROES_GRUPOS = {"idoso": r'\bidos|superior a 60', "adulto": r'\badult', "adolescente": r'\badolescente',
                   "gestante": r'\bgestante', "crianca": r'\bcrianca'}
+# Vacina citada na pergunta -> título da seção dela na Instrução Normativa (regex do Postgres, "." no lugar do acento)
+VACINA_NO_TITULO = [
+  (r'\b(?:gripe|influenza)\b', 'influenza'), (r'\bcovid', 'covid'), (r'\bdengue\b', 'dengue'),
+  (r'\b(?:hpv|papiloma\w*)\b', 'papilomav'), (r'\bfebre amarela\b', 'febre amarela'),
+  (r'\b(?:sarampo|caxumba|rubeola|triplice viral)\b', 'tr.plice viral'), (r'\btetano\b', 't.tano'),
+  (r'\bhepatite\b', 'hepatite'), (r'\bpolio\w*', 'poliomielite'), (r'\brotavirus\b', 'rotav.rus'),
+  (r'\bpneumo\w*', 'pneumoc.cica'), (r'\bmeningo\w*', 'meningoc.cica'), (r'\bvaricela\b', 'varicela'),
+  (r'\bbcg\b', 'bcg'), (r'\bpenta\w*', 'penta'), (r'\bdtpa\b', 'dtpa'), (r'\b(?:vsr|sincicial)\b', 'sincicial'),
+]
+VACINAS_ESPECIFICAS = "|".join(padrao for padrao, _ in VACINA_NO_TITULO)
 
 def _extrair_grupo(pergunta: str):
   #"Quais vacinas um idoso deve tomar?" / "vacinas aos 65 anos": pede a lista do grupo, não uma vacina específica
   norm = _normalizar(pergunta)
-  if not re.search(r'\bvacinas\b|\bquais\b.*\bvacinas?\b', norm):
+  #Citou uma vacina ("vacina da gripe pra idoso"): quer saber dela, não a lista inteira do grupo
+  if not re.search(r'\bvacina(?:s|r)?\b', norm) or re.search(VACINAS_ESPECIFICAS, norm):
     return None
   for grupo in PADROES_GRUPOS:
     if re.search(rf'\b{grupo}s?\b', norm):
@@ -255,6 +301,16 @@ def trechos_do_grupo(grupo: str, chunks: list) -> list:
       trechos.append((fonte, f"{publico} Indicação para este grupo somente em: {indigena.group(0).strip()}."))
   return trechos
 
+# Palavras que não identificam uma unidade: comuns em nome de bairro ou no jeito de perguntar
+PALAVRAS_SEM_NOME = {
+  "jardim", "vila", "parque", "nova", "novo", "conjunto", "residencial", "nucleo", "habitacional", "centro",
+  "saude", "santa", "santo", "posto", "unidade", "telefone", "endereco", "horario", "horarios", "fone", "onde",
+  "fica", "abre", "fecha", "qual", "quais", "que", "horas", "esta", "estou", "funciona", "contato", "email",
+  "vacina", "vacinas", "aberto", "hoje", "amanha", "perto", "numero", "tambem", "para", "ainda",
+  "domingo", "domingos", "sabado", "sabados", "feriado", "feriados", "documento", "documentos", "levar",
+  "precisa", "atendimento", "atende", "medico", "consulta", "agendar", "marcar", "bairro",
+}
+
 def _nome_base_unidade(nome: str) -> str:
   return re.sub(r'^(?:ubs|usf|centro de saude)\s+', '', _normalizar(nome)).strip()
 
@@ -271,17 +327,31 @@ def _unidades_citadas(pergunta: str, unidades: list) -> list:
     return citadas
 
   nome = _extrair_nome_ubs(pergunta)
-  if not nome:
-    return []
-  parecidas = difflib.get_close_matches(nome, list(bases), n=3, cutoff=0.8)
-  return [bases[b] for b in parecidas]
+  if nome:
+    parecidas = difflib.get_close_matches(nome, list(bases), n=3, cutoff=0.8)
+    if parecidas:
+      return [bases[b] for b in parecidas]
+
+  #Palavra a palavra: "posto do cavalari telefone" -> JARDIM CAVALARI; "joquei" -> JOQUEY CLUBE
+  palavras = {p for p in pergunta_norm.split() if len(p) >= 4 and p not in PALAVRAS_SEM_NOME}
+  pontos = {}
+  for base in bases:
+    nomes = [t for t in base.split() if len(t) >= 4 and t not in PALAVRAS_SEM_NOME]
+    acertos = sum(1 for p in palavras if difflib.get_close_matches(p, nomes, n=1, cutoff=0.8))
+    if acertos:
+      pontos[base] = acertos
+  melhor = max(pontos.values(), default=0)
+  return [bases[b] for b, n in pontos.items() if n == melhor] if melhor else []
 
 def buscar(pergunta: str, k: int = 3, codigo_ibge: str = CODIGO_IBGE_PADRAO):
     #Recebe uma pergunta em português, devolve os `k` trechos mais relevantes e a fonte de cada um
     #Busca híbrida: unidade citada pelo nome -> consulta direta na tabela; idade específica -> bloco
     #daquela idade no texto; senão, busca semântica nos chunks da fonte nacional e do município
 
-    pergunta_limpa = pergunta.strip()
+    #As regras usam a pergunta interpretada; o embedding só muda se o dicionário mudou algo
+    #(o limiar de distância foi calibrado com o texto original)
+    pergunta_limpa = interpretar(pergunta)
+    texto_embedding = pergunta.strip() if pergunta_limpa == re.sub(r'\s+', ' ', _normalizar(pergunta)).strip() else pergunta_limpa
     termo_idade = _extrair_termo_idade(pergunta_limpa)
 
     with banco_dados.conectar() as conexao:
@@ -338,18 +408,22 @@ def buscar(pergunta: str, k: int = 3, codigo_ibge: str = CODIGO_IBGE_PADRAO):
 
             #Busca sem idade específica (fallback para busca semântica)
             #Cobre perguntas sobre UBS, endereços, telefones, gestantes sem idade em meses, etc.
-            embedding_pergunta = str(gerar_embeddings([pergunta_limpa])[0])
-            linhas = cursor.execute(
-                """
+            embedding_pergunta = str(gerar_embeddings([texto_embedding])[0])
+            #Citou uma vacina: procura só na seção dela, senão "vacina covid quem pode tomar" trazia varicela
+            titulos = [t for padrao, t in VACINA_NO_TITULO if re.search(padrao, pergunta_limpa)]
+            consulta = """
                 select c.texto, c.fonte_id,
                        c.embedding operator(extensions.<=>) %(vetor)s::extensions.vector as distancia
                 from chunks c
-                where c.fonte_id = any(%(fontes)s)
+                where c.fonte_id = any(%(fontes)s) and (%(titulo)s::text is null or left(c.texto, 200) ~* %(titulo)s)
                 order by distancia
                 limit %(k)s
-                """,
-                {"vetor": embedding_pergunta, "fontes": list(fonte_por_id), "k": k},
-            ).fetchall()
+                """
+            parametros = {"vetor": embedding_pergunta, "fontes": list(fonte_por_id), "k": k,
+                          "titulo": r"^\[[^]]*(?:" + "|".join(titulos) + ")" if titulos else None}
+            linhas = cursor.execute(consulta, parametros).fetchall()
+            if not linhas and titulos:
+                linhas = cursor.execute(consulta, {**parametros, "titulo": None}).fetchall()
             return [
                 _resultado(fonte_por_id[l["fonte_id"]]["nome"], _limpar_saida(l["texto"]), round(l["distancia"], 4))
                 for l in linhas

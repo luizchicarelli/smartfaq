@@ -34,6 +34,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from pipeline_dados import _normalizar, interpretar
+
 
 # ============================================================
 # CONFIGURAÇÃO
@@ -116,6 +118,7 @@ PALAVRAS_DENTRO_ESCOPO = [
     "agendamento", "agendar", "consulta", "horário", "horario", "horários",
     "horarios", "endereço", "endereco", "funcionamento", "exame",
     "encaminhamento", "prontuário", "prontuario", "unidade", "ubs", "usf", "posto",
+    "febre amarela",
 ]
 
 MENSAGEM_FORA_ESCOPO = (
@@ -140,9 +143,10 @@ def guardrail_pre(pergunta: str) -> bool:
     bloqueia — é tratada como dentro do escopo, porque "dose"/"remédio"
     isolado é ambíguo demais pra travar sozinho.
     """
-    texto = pergunta.lower()
-    fora = any(p in texto for p in PALAVRAS_FORA_ESCOPO)
-    dentro = any(p in texto for p in PALAVRAS_DENTRO_ESCOPO)
+    # Interpretada: "febri" e "remedio" sem acento também são pegos
+    texto = interpretar(pergunta)
+    fora = any(_normalizar(p) in texto for p in PALAVRAS_FORA_ESCOPO)
+    dentro = any(_normalizar(p) in texto for p in PALAVRAS_DENTRO_ESCOPO)
     return fora and not dentro
 
 
