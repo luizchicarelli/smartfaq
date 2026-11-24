@@ -2,7 +2,8 @@
 Job de ingestão: baixa as fontes oficiais, compara o hash e só reindexa o
 que mudou. Idempotente; rodar de novo sem mudança não regrava nada. Se uma
 fonte falhar, a versão anterior continua no banco e o erro fica em
-log_ingestao (a saída do script é 1, para o GitHub Actions avisar).
+log_ingestao (a saída do script é 1, para o GitHub Actions avisar). Falha
+de conexão só conta como erro depois de DIAS_SEM_COLETA sem coleta boa.
 
 Rode a partir da RAIZ do projeto:
 
@@ -59,6 +60,10 @@ MINIMO_CARACTERES_PDF = 20000
 
 FORCAR = "--forcar" in sys.argv
 
+# Sem conexão com uma fonte, o job só fica vermelho depois de tantos dias sem
+# coleta boa: é o lembrete para rodar do computador (o gov.br bloqueia o GitHub).
+DIAS_SEM_COLETA = 30
+
 
 def baixar(url: str, tentativas: int = 3) -> bytes:
     pedido = urllib.request.Request(url, headers={"User-Agent": "SmartFAQ-UBS/0.1 (projeto academico)"})
@@ -78,17 +83,21 @@ def _sha256(conteudo: bytes) -> str:
 
 def unidades_do_cnes(codigo_ibge: str) -> list:
     """Unidades básicas do município que atendem pelo SUS (tira penitenciária etc.)."""
-    registros = []
+    por_codigo = {}
     for tipo in TIPOS_UNIDADE:
-        deslocamento = 0
+        numero_pagina = 0
         while True:
+            # Desde nov/2026, offset é o número da página (0, 1, 2...), não de itens a pular
             url = (f"{URL_CNES}?codigo_municipio={codigo_ibge}&codigo_tipo_unidade={tipo}"
-                   f"&limit={TAMANHO_PAGINA_CNES}&offset={deslocamento}")
+                   f"&limit={TAMANHO_PAGINA_CNES}&offset={numero_pagina}")
             pagina = json.loads(baixar(url))["estabelecimentos"]
-            registros += pagina
-            if len(pagina) < TAMANHO_PAGINA_CNES:
+            novos = {r["codigo_cnes"]: r for r in pagina if r["codigo_cnes"] not in por_codigo}
+            por_codigo.update(novos)
+            # Sem nada novo: a API ignorou o offset ou repetiu a página; parar evita laço infinito
+            if len(pagina) < TAMANHO_PAGINA_CNES or not novos:
                 break
-            deslocamento += TAMANHO_PAGINA_CNES
+            numero_pagina += 1
+    registros = list(por_codigo.values())
 
     # E-mail repetido em várias unidades ou com domínio inválido é cadastro genérico: melhor não informar
     repeticoes = collections.Counter(r["endereco_email_estabelecimento"] for r in registros)
@@ -285,6 +294,11 @@ def atualizar_unidades(conexao, codigo_ibge: str, municipio: str) -> str:
     unidades = unidades_do_cnes(codigo_ibge)
     if not unidades:  # API vazia não pode apagar as unidades que já temos
         raise ValueError(f"CNES não devolveu nenhuma unidade para {codigo_ibge}")
+    # Queda brusca costuma ser mudança na API (em nov/2026 vieram 20 de 58 e o resto foi apagado)
+    atuais = conexao.execute("select count(*) from unidades where codigo_ibge = %s", (codigo_ibge,)).fetchone()[0]
+    if len(unidades) < 0.8 * atuais and not FORCAR:
+        raise ValueError(f"CNES trouxe {len(unidades)} unidades e o banco tem {atuais}: "
+                         "confira a API; se o fechamento for real, rode com --forcar")
     fonte = {
         "nome": f"cnes_unidades_{codigo_ibge}",
         "titulo": f"CNES: unidades básicas de saúde de {municipio}",
@@ -373,11 +387,24 @@ def main() -> int:
             try:
                 print(f"[ingestao] {nome}: {tarefa(conexao)}")
             except Exception as erro:
-                falhas += 1
                 detalhe = f"{type(erro).__name__}: {erro}"
-                print(f"[ingestao] {nome}: ERRO {detalhe}")
                 _registrar_log(conexao, nome, "erro", detalhe)
+                if isinstance(erro, OSError) and coleta_recente(conexao, nome):
+                    # O gov.br recusa a conexão dos servidores do GitHub; a versão anterior segue valendo
+                    print(f"::warning::[ingestao] {nome}: sem conexão, mantida a versão anterior ({detalhe})")
+                    continue
+                falhas += 1
+                print(f"[ingestao] {nome}: ERRO {detalhe}")
     return 1 if falhas else 0
+
+
+def coleta_recente(conexao, nome: str) -> bool:
+    """Falha de rede só vira erro quando a última coleta boa passou de DIAS_SEM_COLETA."""
+    linha = conexao.execute(
+        "select coletado_em > now() - make_interval(days => %s) from fontes where nome = %s",
+        (DIAS_SEM_COLETA, nome),
+    ).fetchone()
+    return bool(linha and linha[0])
 
 
 if __name__ == "__main__":

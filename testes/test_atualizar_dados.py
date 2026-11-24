@@ -48,6 +48,48 @@ def _ultimo_log(conexao):
     ).fetchone()[0]
 
 
+def _cnes_falso(monkeypatch, total, offset_e_pagina=True):
+    """API do CNES simulada: `total` unidades do tipo 2, páginas de 20."""
+    import json
+    import re
+    todas = [{"codigo_cnes": i, "nome_fantasia": f"USF {i}", "endereco_estabelecimento": "Rua", "numero_estabelecimento": "1",
+              "bairro_estabelecimento": "B", "numero_telefone_estabelecimento": "", "endereco_email_estabelecimento": "",
+              "descricao_turno_atendimento": "", "data_atualizacao": "2026-11-24",
+              "estabelecimento_faz_atendimento_ambulatorial_sus": "SIM"} for i in range(total)]
+    pedidos = []
+
+    def baixar(url):
+        pedidos.append(url)
+        tipo, offset = int(re.search(r"tipo_unidade=(\d)", url)[1]), int(re.search(r"offset=(\d+)", url)[1])
+        inicio = offset * 20 if offset_e_pagina else offset
+        return json.dumps({"estabelecimentos": todas[inicio:inicio + 20] if tipo == 2 else []}).encode()
+
+    monkeypatch.setattr(job, "baixar", baixar)
+    return pedidos
+
+
+def test_cnes_pagina_pelo_numero_da_pagina(monkeypatch):
+    _cnes_falso(monkeypatch, 58)
+    assert len(job.unidades_do_cnes("352900")) == 58
+
+
+def test_cnes_com_offset_em_itens_tambem_termina(monkeypatch):
+    # Se a API voltar ao formato antigo, as páginas se sobrepõem: não pode duplicar nem travar
+    pedidos = _cnes_falso(monkeypatch, 58, offset_e_pagina=False)
+    assert len(job.unidades_do_cnes("352900")) == 58
+    assert len(pedidos) < 100
+
+
+def test_queda_brusca_de_unidades_nao_apaga_o_banco(conexao, monkeypatch):
+    conexao.execute("delete from unidades where codigo_ibge = '352900'")
+    conexao.execute("insert into unidades (codigo_cnes, codigo_ibge, nome) select g, '352900', 'x' "
+                    "from generate_series(1, 58) g")
+    _cnes_falso(monkeypatch, 20)
+    with pytest.raises(ValueError, match="20 unidades"):
+        job.atualizar_unidades(conexao, "352900", "Marília")
+    assert conexao.execute("select count(*) from unidades where codigo_ibge = '352900'").fetchone()[0] == 58
+
+
 def test_segunda_execucao_nao_reindexa(conexao):
     assert job.sincronizar_fonte(conexao, FONTE, "hash1", lambda: ["um", "dois"]) == "atualizado"
 
@@ -83,6 +125,14 @@ def test_falha_mantem_a_versao_anterior(conexao):
     assert _chunks(conexao) == ["um"]
     hash_atual = conexao.execute("select hash_conteudo from fontes where nome = %s", (FONTE["nome"],)).fetchone()[0]
     assert hash_atual == "hash1"  # a próxima execução tenta de novo
+
+
+def test_sem_conexao_so_vira_erro_com_coleta_velha(conexao):
+    job.sincronizar_fonte(conexao, FONTE, "hash1", lambda: ["um"])
+    assert job.coleta_recente(conexao, FONTE["nome"])
+    conexao.execute("update fontes set coletado_em = now() - interval '31 days' where nome = %s", (FONTE["nome"],))
+    assert not job.coleta_recente(conexao, FONTE["nome"])
+    assert not job.coleta_recente(conexao, "_fonte_que_nao_existe")
 
 
 def test_gravar_unidades_atualiza_e_remove_quem_saiu(conexao):
